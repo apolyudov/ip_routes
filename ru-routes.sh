@@ -229,6 +229,12 @@ del_routes() {
     log "Total routes removed: $removed, skipped/failed: $failed"
 }
 
+ipv4_sort() {
+  awk -F'[./]' '{printf "%03d.%03d.%03d.%03d/%02d %s\n", $1, $2, $3, $4, $5, $0}' \
+    | sort -u \
+    | sed 's/^[^ ]* //'
+}
+
 flush_routes() {
     local table=$1
     local count
@@ -414,9 +420,9 @@ calc_diffs() {
 
   name_base="$name_input.sorted"
 
-  cat "$name_input" | sort > "$name_base"
+  cat "$name_input" | ipv4_sort > "$name_base"
 
-  ip route show table $table | cut -d" " -f1 | sort > "$tbl_file"
+  ip route show table $table | cut -d" " -f1 | ipv4_sort > "$tbl_file"
   diff -ura "$tbl_file" "$name_base" | grep "^+" | sed '1d' | cut -c2- > "$name_add" || true
   diff -ura "$tbl_file" "$name_base" | grep "^-" | sed '1d' | cut -c2- > "$name_del" || true
   rm -f "$tbl_file" "$name_base"
