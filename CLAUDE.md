@@ -1,0 +1,104 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Linux routing management toolkit for policy-based routing. Two main use cases:
+1. Route Russian IP subnets through a specific interface/gateway (for VPN-like split tunneling)
+2. Manage SberCloud VPN routing by moving routes between routing tables
+
+All scripts require root/sudo. Designed for Linux with `iproute2`.
+
+## Commands
+
+### Main script — `ru-routes.sh`
+
+```bash
+sudo ./ru-routes.sh install        # Download subnet list, register routing table, add routes and ip rule
+sudo ./ru-routes.sh update         # Re-download and apply diffs (incremental add/del)
+sudo ./ru-routes.sh remove         # Flush routes, remove ip rule, clean radb-tools data
+sudo ./ru-routes.sh status         # Show routing state (table, rule, route count, last update)
+
+sudo ./ru-routes.sh install_sber   # Set up sber_cloud_pub (50) and sber_cloud_tun (100) tables
+sudo ./ru-routes.sh remove_sber    # Flush and remove sber_cloud tables
+sudo ./ru-routes.sh update_sber    # remove_sber + install_sber (use after VPN reconnect)
+```
+
+Configuration via environment variables or `ru-routes.conf` (sourced from same directory):
+- `IFACE` — target network interface (required for install)
+- `GATEWAY` — optional gateway address
+- `TABLE` — routing table name (default: `ru_routes`)
+- `TABLE_ID` — numeric table ID (default: `200`)
+- `PRIORITY` — ip rule priority (default: `500`)
+- `SOURCE_URL` — subnet list URL
+- `CACHE_DIR` — cache directory (default: `~/.local/ru-routes/cache`)
+
+Config is persisted to `$CACHE_DIR/config` on install; subsequent update/remove/status load it back.
+
+### Helper scripts
+
+- `mv-routes.sh` — Moves routes matching `--iface`/`--proto` criteria from main table to a target table. Supports `--no-iface`/`--no-proto` for inverse matching. Two-phase: add to target first, then delete from main only on success.
+- `collect.sh` — Diagnostic script that dumps network state (interfaces, addresses, routes, rules, DNS).
+- `combo.sh` — Quick AdGuardVPN connect/disconnect with route setup (`enable`/`disable`).
+
+### `ip_whois.py`
+
+Fetches WHOIS data for all IPs in the routing table via reg.ru, outputs `ip_whois.csv` (public) and `ip_whois_private.csv` (private). Uses `reg_cache.txt` as a local cache of inetnum ranges to avoid redundant lookups.
+
+Dependencies: `beautifulsoup4` (install separately).
+
+### radb-tools submodule
+
+See `radb-tools/README.md`. Key commands via `dbctl`:
+```bash
+cd radb-tools && ./dbctl install    # Create venv, install Python deps
+./dbctl pull_db                     # Download RIPE ASN database and MRT RIB dump
+./dbctl update_ip                   # Generate ip_RU.lst and asn_RU.lst from the database
+./dbctl clean                       # Remove generated/backup files
+```
+
+## Architecture
+
+```
+ru-routes.sh          Main orchestrator (install/update/remove/status for Russian routes)
+├── mv-routes.sh      Low-level route mover between tables
+├── radb-tools/       Git submodule (github.com:apolyudov/radb-tools)
+│   ├── dbctl         Shell driver: pull_db, update_ip, install, clean
+│   ├── ip-country.py         Generates ip_<CC>.lst (CIDR prefixes per country from MRT RIB data)
+│   ├── asn-country.py        Generates asn_<CC>.lst (ASN list per country)
+│   ├── ip-country-ripe.py    Alternative: uses RIPE Stat API instead of MRT data
+│   └── requirements.txt      aggregate_prefixes, pyasn, requests
+collect.sh            Network diagnostics dumper
+combo.sh              AdGuardVPN quick-connect wrapper
+ip_whois.py           WHOIS lookup tool for routes
+```
+
+### Data flow (install)
+
+1. `ru-routes.sh install` calls `radb-tools/dbctl pull_db` + `update_ip` to build `ip_allow.lst`
+2. `ip_allow.lst` = `ip_RU.lst` (aggregated Russian prefixes) + `ip_extra.txt` (manual additions)
+3. Routes are added to a custom routing table (default: `ru_routes`, ID 200)
+4. An `ip rule` entry directs traffic through this table at the configured priority
+
+### Data flow (update)
+
+1. Re-downloads the subnet list
+2. `calc_diffs()` computes add/del diffs against the current routing table
+3. Only adds new routes and removes stale ones — rule stays in place
+
+### Routing table structure
+
+- **Table 50** (`sber_cloud_pub`): non-tun0, non-trivial-protocol routes (SberCloud public)
+- **Table 100** (`sber_cloud_tun`): tun0 routes (SberCloud VPN tunnel)
+- **Table 200** (`ru_routes`): Russian IP subnets routed through specified interface
+
+Tables are registered in `/etc/iproute2/rt_tables` by `register_table()`.
+
+## Key conventions
+
+- Shell scripts use `set -euo pipefail` (or `set -eu`)
+- File locking via `/tmp/ru-routes.lock` with stale-lock detection (PID check + 10min timeout)
+- All route operations are idempotent where possible
+- `ru-routes.sh` uses two-phase route moves (add first, delete only on success) to avoid route loss
+- radb-tools venv is at `radb-tools/venv/` (Python 3.14)
