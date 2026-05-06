@@ -150,8 +150,11 @@ download_subnets() {
     (
         cd radb-tools
         ./dbctl pull_db
-        ./dbctl update_ip
+        ./dbctl update_ip RU
+        ./dbctl update_ip CN
+        ./dbctl merge_ip ip_RU.lst ip_CN.lst
         cp ip_allow.lst $tmpfile
+        ./dbctl clean
     )
     return 0
 }
