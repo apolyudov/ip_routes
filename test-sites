@@ -1,0 +1,49 @@
+#!/bin/bash
+
+ru_sites=(
+yandex.ru
+habr.com
+lib.ru
+auto.ru
+wikipedia.ru
+reg.ru
+sberdevices.ru
+z.ai
+""
+)
+
+sber_sites=(
+git.sberdevices.ru
+tasks.sberdevices.ru
+confluence.sberdevices.ru
+""
+)
+
+other_sites=(
+google.com
+claude.ai
+nordicsemi.com
+cppreference.com
+""
+)
+
+test_route_table() {
+  table=$1
+  shift
+  while true; do
+    site="$1"
+    shift
+    [ -z "$site" ] && break
+    echo -n "tesing $site ... "
+    [ "$(ip route get $(dig +short $site | tail -1) | grep -o "table $table")" == "table $table" ] && echo "OK" || echo "failed to route $site with $table"
+  done
+}
+
+echo -n "Testing Russian sites with Russian routing ... "
+test_route_table ru_routes "${ru_sites[@]}" | grep -q "failed" && echo "TESTS FAILED" || echo "TESTS PASSED"
+echo -n "Testing non-Russian sites with Russian routing ... "
+test_route_table ru_routes "${other_sites[@]}" | grep -q "OK" && echo "TESTS FAILED" || echo "TESTS PASSED"
+echo -n "Testing sber sites with Sber routing ... "
+test_route_table sber_cloud_tun "${sber_sites[@]}" | grep -q "failed" && echo "TESTS FAILED" || echo "TESTS PASSED"
+echo -n "Testing non-Russian sites with Sber routing ... "
+test_route_table sber_cloud_tun "${other_sites[@]}" | grep -q "OK" && echo "TESTS FAILED" || echo "TESTS PASSED"
