@@ -95,6 +95,22 @@ ip_whois.py           WHOIS lookup tool for routes
 
 Tables are registered in `/etc/iproute2/rt_tables` by `register_table()`.
 
+## Testing
+
+After modifying `ru-routes.sh` (or any routing logic), run `test-sites` to verify routing correctness:
+
+```bash
+./test-sites
+```
+
+It resolves a set of known sites and checks that their IPs land in the expected routing tables:
+- Russian/Chinese sites go through `ru_routes`
+- Non-Russian sites do **not** go through `ru_routes`
+- Sber sites go through `sber_cloud_tun`
+- Non-Russian sites do **not** go through `sber_cloud_tun`
+
+Each check prints PASSED/FAILED. All four must pass before considering changes to routing logic complete.
+
 ## Key conventions
 
 - Shell scripts use `set -euo pipefail` (or `set -eu`)
