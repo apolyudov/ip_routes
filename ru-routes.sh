@@ -338,10 +338,10 @@ cmd_install() {
     check_interface
     acquire_lock
 
-    local tmpfile
-    tmpfile="$(mktemp --tmpdir=$BASE_DIR)"
-    cleanup_install() { rm -f "$tmpfile"; release_lock; }
+    TMPFILE="$(mktemp --tmpdir=$BASE_DIR)"
+    cleanup_install() { rm -f "$TMPFILE"; release_lock; }
     trap cleanup_install EXIT
+    local tmpfile=$TMPFILE
 
     (
         cd radb-tools
@@ -447,10 +447,10 @@ cmd_update() {
 
     acquire_lock
 
-    local tmpfile
-    tmpfile="$(mktemp --tmpdir=$BASE_DIR)"
-    cleanup_update() { rm -f "$tmpfile"; release_lock; }
+    TMPFILE="$(mktemp --tmpdir=$BASE_DIR)"
+    cleanup_update() { rm -f "$TMPFILE"; release_lock; }
     trap cleanup_update EXIT
+    local tmpfile=$TMPFILE
 
     if ! download_subnets "$tmpfile"; then
         if (( USE_CACHE )) && [[ -f "$CACHE_DIR/subnet.lst" ]]; then
