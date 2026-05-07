@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────
-IFACE=${IFACE:-enp6s0}
+IFACE="${IFACE:-}"
 TABLE="${TABLE:-ru_routes}"
 TABLE_ID="${TABLE_ID:-200}"
 PRIORITY="${PRIORITY:-500}"
-GATEWAY="${GATEWAY:-192.168.1.1}"
+GATEWAY="${GATEWAY:-}"
 SOURCE_URL="${SOURCE_URL:-https://antifilter.download/list/subnet.lst}"
 BASE_DIR="${BASE_DIR:-$HOME/.local/ru-routes}"
 CACHE_DIR="${CACHE_DIR:-$BASE_DIR/cache}"
@@ -146,17 +146,16 @@ register_table() {
 }
 
 download_subnets() {
-    tmpfile="$1"
+    local tmpfile="$1"
     (
         cd radb-tools
         ./dbctl pull_db
         ./dbctl update_ip RU
         ./dbctl update_ip CN
         ./dbctl merge_ip ip_RU.lst ip_CN.lst
-        cp ip_allow.lst $tmpfile
+        cp ip_allow.lst "$tmpfile"
         ./dbctl clean
     )
-    return 0
 }
 
 validate_subnets() {
@@ -257,7 +256,7 @@ add_rule() {
     # Idempotent: skip if rule already exists
     local table=$1
     local pri=$2
-    if ip rule show | grep -q "table $table"; then
+    if ip rule show | grep -q "lookup $table"; then
         log "Rule for table $table already exists."
         return 0
     fi
@@ -338,11 +337,11 @@ cmd_install_sber() {
 cmd_install() {
     check_interface
     acquire_lock
-    trap release_lock EXIT
 
     local tmpfile
     tmpfile="$(mktemp --tmpdir=$BASE_DIR)"
-    trap 'rm -f "$tmpfile"' EXIT
+    cleanup_install() { rm -f "$tmpfile"; release_lock; }
+    trap cleanup_install EXIT
 
     (
         cd radb-tools
@@ -357,6 +356,11 @@ cmd_install() {
             err "Cannot proceed without subnet list."
             exit 1
         fi
+    fi
+
+    if ! validate_subnets "$tmpfile"; then
+        err "Subnet validation failed. Aborting."
+        exit 1
     fi
 
     # table for russian routes
@@ -374,10 +378,8 @@ cmd_install() {
     date '+%Y-%m-%d %H:%M:%S' > "$CACHE_DIR/last-update"
     save_config
 
-    rm -f "$tmpfile"
-    trap - EXIT
-    release_lock
-
+    # Clear the trap since we succeeded — cleanup function will run on EXIT
+    tmpfile=""
     log "Install complete."
 }
 
@@ -444,11 +446,11 @@ cmd_update() {
     fi
 
     acquire_lock
-    trap release_lock EXIT
 
     local tmpfile
     tmpfile="$(mktemp --tmpdir=$BASE_DIR)"
-    trap 'rm -f "$tmpfile"' EXIT
+    cleanup_update() { rm -f "$tmpfile"; release_lock; }
+    trap cleanup_update EXIT
 
     if ! download_subnets "$tmpfile"; then
         if (( USE_CACHE )) && [[ -f "$CACHE_DIR/subnet.lst" ]]; then
@@ -458,6 +460,11 @@ cmd_update() {
             err "Download failed and no cache available. Routes unchanged."
             exit 1
         fi
+    fi
+
+    if ! validate_subnets "$tmpfile"; then
+        err "Subnet validation failed. Routes unchanged."
+        exit 1
     fi
 
     local name_base="$tmpfile"
@@ -474,10 +481,7 @@ cmd_update() {
     date '+%Y-%m-%d %H:%M:%S' > "$CACHE_DIR/last-update"
     save_config
 
-    rm -f "$tmpfile"
-    trap - EXIT
-    release_lock
-
+    tmpfile=""
     log "Update complete."
 }
 
@@ -496,7 +500,7 @@ cmd_status() {
     local rule_status="not installed"
     local rule_prio=""
     local rule_line
-    rule_line="$(ip rule show 2>/dev/null | grep "table $TABLE" || true)"
+    rule_line="$(ip rule show 2>/dev/null | grep "lookup $TABLE" || true)"
     if [[ -n "$rule_line" ]]; then
         rule_prio="$(echo "$rule_line" | grep -oP '^\d+' | head -1)"
         rule_status="installed (priority ${rule_prio})"

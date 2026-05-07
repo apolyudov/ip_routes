@@ -4,7 +4,7 @@ Linux policy-based routing toolkit for managing split tunneling and VPN routing.
 
 ## What it does
 
-- Downloads a list of Russian IP subnets and routes them through a specified network interface and gateway
+- Downloads a list of Russian and Chinese IP subnets and routes them through a specified network interface and gateway
 - Manages SberCloud VPN routing by organizing routes into dedicated routing tables
 - Provides diagnostics and WHOIS lookup tools for inspecting the routing table
 
@@ -21,8 +21,8 @@ Linux policy-based routing toolkit for managing split tunneling and VPN routing.
 git clone --recurse-submodules <repo-url>
 cd ip_routes
 
-# Route Russian IPs through enp6s0 via 192.168.1.1
-IFACE=enp6s0 GATEWAY=192.168.1.1 ./ru-routes.sh install
+# Route Russian and Chinese IPs through a specific interface/gateway
+IFACE=eth0 GATEWAY=10.0.0.1 ./ru-routes.sh install
 ```
 
 ## Commands
@@ -34,6 +34,10 @@ IFACE=enp6s0 GATEWAY=192.168.1.1 ./ru-routes.sh install
 ./ru-routes.sh update         # Re-download and apply incremental diffs
 ./ru-routes.sh remove         # Flush routes, remove rule, clean up
 ./ru-routes.sh status         # Show current routing state
+
+# Options
+./ru-routes.sh --quiet install         # Suppress progress output
+./ru-routes.sh --no-use-cache update   # Don't fall back to cached subnet list
 ```
 
 #### SberCloud VPN management
@@ -52,6 +56,7 @@ IFACE=enp6s0 GATEWAY=192.168.1.1 ./ru-routes.sh install
 | `collect.sh` | Dump full network state (interfaces, addresses, routes, rules, DNS) |
 | `combo.sh` | Quick AdGuardVPN connect/disconnect with route setup |
 | `ip_whois.py` | WHOIS lookup for all IPs in the routing table, outputs CSV |
+| `test-sites` | Verify that sites are routed through the correct routing tables |
 
 ### mv-routes.sh
 
@@ -61,29 +66,41 @@ sudo ./mv-routes.sh --table TABLE_ID [--iface INTERFACE] [--proto PROTOCOL] [--d
 
 Supports inverse matching with `--no-iface` and `--no-proto`. Use `--dry-run` to preview.
 
+### test-sites
+
+```bash
+./test-sites
+```
+
+Verifies routing correctness by resolving sites and checking which routing table their IPs land in. Runs four checks:
+
+- Russian sites go through `ru_routes`
+- Non-Russian sites do **not** go through `ru_routes`
+- Sber sites go through `sber_cloud_tun`
+- Non-Russian sites do **not** go through `sber_cloud_tun`
+
 ## Configuration
 
 Set via environment variables or `ru-routes.conf` (placed next to the script):
 
 | Variable | Default | Description |
 |---|---|---|
-| `IFACE` | — | Target network interface (required for install) |
-| `GATEWAY` | — | Gateway address (optional) |
+| `IFACE` | _(required)_ | Target network interface |
+| `GATEWAY` | _(none)_ | Optional gateway address |
 | `TABLE` | `ru_routes` | Routing table name |
 | `TABLE_ID` | `200` | Routing table numeric ID |
 | `PRIORITY` | `500` | ip rule priority |
-| `SOURCE_URL` | antiffilter.download | Subnet list URL |
 | `CACHE_DIR` | `~/.local/ru-routes/cache` | Cache directory |
 
 Configuration is saved to `$CACHE_DIR/config` on `install`. Subsequent `update`, `remove`, and `status` commands read it back automatically.
 
 ## How it works
 
-### Russian routes (install)
+### Russian and Chinese routes (install)
 
 1. Downloads RIPE ASN database and MRT RIB dump via `radb-tools`
-2. Generates a list of Russian IP prefixes (`ip_RU.lst`) aggregated with `aggregate_prefixes`
-3. Merges with manual additions from `ip_extra.txt` into `ip_allow.lst`
+2. Generates aggregated IP prefix lists for Russia (`ip_RU.lst`) and China (`ip_CN.lst`)
+3. Merges both into `ip_allow.lst` via `dbctl merge_ip`
 4. Registers a routing table in `/etc/iproute2/rt_tables`
 5. Adds a route for each subnet through the configured interface
 6. Creates an `ip rule` entry to direct traffic through the table
@@ -91,6 +108,8 @@ Configuration is saved to `$CACHE_DIR/config` on `install`. Subsequent `update`,
 ### Updates
 
 On `update`, the tool re-downloads the subnet list and computes diffs against the current routing table. Only new routes are added and stale ones removed — the ip rule stays in place.
+
+Downloaded subnet lists are validated (checked for non-empty, CIDR format) before any routes are modified. If validation or download fails, a previously cached list is used as fallback (`--no-use-cache` to disable).
 
 ### SberCloud routing
 

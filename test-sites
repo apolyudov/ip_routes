@@ -1,6 +1,7 @@
 #!/bin/bash
 
 ru_sites=(
+# Russian
 yandex.ru
 habr.com
 lib.ru
@@ -8,11 +9,13 @@ auto.ru
 wikipedia.ru
 reg.ru
 sberdevices.ru
+# Chinese
 z.ai
 ""
 )
 
 sber_sites=(
+# sberdevices
 git.sberdevices.ru
 tasks.sberdevices.ru
 confluence.sberdevices.ru
@@ -20,6 +23,7 @@ confluence.sberdevices.ru
 )
 
 other_sites=(
+# rest of the world
 google.com
 claude.ai
 nordicsemi.com
