@@ -37,11 +37,12 @@ def is_private_ip(ip):
 
 
 def extract_route_ips(route_output):
-    """Extract IPs from ip route output, split into public IPs and private routes.
+    """Extract IPs from ip route output, split into public/private.
 
     Returns (public_ips, private_routes) where:
       public_ips: sorted list of unique public IP strings
-      private_routes: dict mapping route_line -> sorted list of private IPs in it
+      private_routes: dict mapping route_line -> sorted
+        list of private IPs in it
     """
     public_ips = set()
     private_routes = {}
@@ -50,7 +51,11 @@ def extract_route_ips(route_output):
         tokens = line.split()
         private_ips = set()
         for token in tokens:
-            m = re.match(r"^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})($|/\d{1,2}$)", token)
+            m = re.match(
+                r"^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
+                r"($|/\d{1,2}$)",
+                token,
+            )
             if m:
                 ip, net = m.groups()
                 if is_private_ip(ip):
@@ -69,11 +74,17 @@ def fetch_whois(ip):
     url = f"https://www.reg.ru/whois/?dname={ip}"
     for attempt in range(MAX_RETRIES):
         try:
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
-            })
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (X11; Linux x86_64) "
+                        "AppleWebKit/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
+                },
+            )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 html = resp.read().decode("utf-8", errors="replace")
             if "inetnum" in html:
@@ -81,7 +92,11 @@ def fetch_whois(ip):
             # No inetnum in response - might be rate limited or no data
             return html
         except (urllib.error.URLError, Exception) as e:
-            print(f"  ERROR (attempt {attempt+1}) fetching {ip}: {e}", file=sys.stderr)
+            print(
+                f"  ERROR (attempt {attempt+1}) "
+                f"fetching {ip}: {e}",
+                file=sys.stderr,
+            )
             if attempt < MAX_RETRIES - 1:
                 time.sleep(2 * (attempt + 1))
     return None
@@ -102,7 +117,7 @@ def parse_whois_fields_raw(html):
     parsed_html = BeautifulSoup(html, 'html.parser')
     elements = parsed_html.find_all(class_="ds-table__cell-content")
     s_rec = []
-    src_text=[]
+    src_text = []
     last_key = ""
     for element in elements:
         for item in element.contents:
@@ -118,8 +133,8 @@ def parse_whois_fields_raw(html):
                     key, value = text.split(":", 1)
                     last_key = key
                 else:
-                    key=last_key
-                    value=text
+                    key = last_key
+                    value = text
                 key = key.strip()
                 value = value.strip()
                 s_rec.append((key, value))
@@ -133,8 +148,8 @@ def filter_whois_fields(doc):
     recs = {}
     for key, value in doc:
         r = recs.get(key, None)
-        if r == None:
-            r = recs[key] = [ value ]
+        if r is None:
+            r = recs[key] = [value]
         else:
             r.append(value)
     return {f: "; ".join(recs.get(f)) for f in FIELDS}
@@ -149,7 +164,7 @@ def whois(ip):
 
 
 def load_reg_cache():
-    known=[]
+    known = []
     with open('reg_cache.txt', 'r') as f:
         for line in f:
             rec = literal_eval(line)
@@ -236,7 +251,10 @@ def main():
         sys.exit(1)
 
     public_ips, private_routes = extract_route_ips(result.stdout)
-    print(f"Found {len(public_ips)} public IPs, {len(private_routes)} routes with private IPs")
+    print(
+        f"Found {len(public_ips)} public IPs, "
+        f"{len(private_routes)} routes with private IPs"
+    )
 
     # Write private route entries
     private_rows = []
@@ -245,10 +263,16 @@ def main():
     private_rows.sort(key=lambda r: ip_sort_key(r["ip_net"].split(", ")[0]))
 
     with open(PRIVATE_OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["ip_net", "route"], lineterminator='\n')
+        writer = csv.DictWriter(
+            f, fieldnames=["ip_net", "route"],
+            lineterminator='\n',
+        )
         writer.writeheader()
         writer.writerows(private_rows)
-    print(f"Private routes written to {PRIVATE_OUTPUT_FILE} ({len(private_rows)} entries)")
+    print(
+        f"Private routes written to {PRIVATE_OUTPUT_FILE} "
+        f"({len(private_rows)} entries)"
+    )
 
     # Look up public IPs
     ips = public_ips
@@ -271,7 +295,10 @@ def main():
         fields = whois(ip)
         row = {"ip": ip, **fields}
         rows.append(row)
-        inetnum_short = fields["inetnum"].split(";")[0][:40] if fields["inetnum"] else "N/A"
+        inetnum_short = (
+            fields["inetnum"].split(";")[0][:40]
+            if fields["inetnum"] else "N/A"
+        )
         print(f"-> {inetnum_short}")
         if not fields["inetnum"]:
             failures.append(ip)
@@ -286,7 +313,10 @@ def main():
 
     # Write CSV
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["ip"] + FIELDS, lineterminator='\n')
+        writer = csv.DictWriter(
+            f, fieldnames=["ip"] + FIELDS,
+            lineterminator='\n',
+        )
         writer.writeheader()
         writer.writerows(rows)
 
