@@ -14,6 +14,8 @@ LOCK_FILE="/tmp/ru-routes.lock"
 QUIET=0
 USE_CACHE=1
 
+cd $(dirname $(readlink $0))
+
 mkdir -p $BASE_DIR
 
 # ── Config file loading ───────────────────────────────────────────────
