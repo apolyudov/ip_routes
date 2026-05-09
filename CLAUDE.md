@@ -19,8 +19,10 @@ sudo ./ru-routes.sh install        # Download subnet list, register routing tabl
 sudo ./ru-routes.sh update         # Re-download and apply diffs (incremental add/del)
 sudo ./ru-routes.sh remove         # Flush routes, remove ip rule, clean radb-tools data
 sudo ./ru-routes.sh status         # Show routing state (table, rule, route count, last update)
-sudo ./ru-routes.sh include add|remove|list|clear [CIDR]   # Manage user-include list (force-add networks)
-sudo ./ru-routes.sh exclude add|remove|list|clear [CIDR]   # Manage user-exclude list (force-remove networks)
+sudo ./ru-routes.sh list [include|exclude]               # Show override list(s) (both if omitted)
+sudo ./ru-routes.sh add <include|exclude> <CIDR>         # Add network to override list
+sudo ./ru-routes.sh del [include|exclude] <CIDR>         # Remove network (searches both if kind omitted)
+sudo ./ru-routes.sh clear [include|exclude]              # Clear override list(s) (both if omitted)
 
 sudo ./ru-routes.sh install_sber   # Set up sber_cloud_pub (50) and sber_cloud_tun (100) tables
 sudo ./ru-routes.sh remove_sber    # Flush and remove sber_cloud tables

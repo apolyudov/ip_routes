@@ -286,27 +286,65 @@ apply_user_overrides() {
     fi
 }
 
-cmd_include() {
-    local subcmd=$1
-    shift || true
-    case "$subcmd" in
-        add)    [[ $# -lt 1 ]] && { err "Usage: $0 include add <cidr>"; exit 1; }; list_add include "$1" ;;
-        remove) [[ $# -lt 1 ]] && { err "Usage: $0 include remove <cidr>"; exit 1; }; list_remove include "$1" ;;
-        list)   list_list include ;;
-        clear)  list_clear include ;;
-        *)      err "Unknown include subcommand: $subcmd"; exit 1 ;;
+cmd_list() {
+    local kind="${1:-}"
+    case "$kind" in
+        include)  list_list include ;;
+        exclude)  list_list exclude ;;
+        "")       echo "Include:"; list_list include; echo "Exclude:"; list_list exclude ;;
+        *)        err "Unknown list kind: $kind (expected include or exclude)"; exit 1 ;;
     esac
 }
 
-cmd_exclude() {
-    local subcmd=$1
+cmd_add() {
+    local kind="${1:-}"
+    case "$kind" in
+        include|exclude) ;;
+        *)  err "Usage: $0 add <include|exclude> <cidr>"; exit 1 ;;
+    esac
     shift || true
-    case "$subcmd" in
-        add)    [[ $# -lt 1 ]] && { err "Usage: $0 exclude add <cidr>"; exit 1; }; list_add exclude "$1" ;;
-        remove) [[ $# -lt 1 ]] && { err "Usage: $0 exclude remove <cidr>"; exit 1; }; list_remove exclude "$1" ;;
-        list)   list_list exclude ;;
-        clear)  list_clear exclude ;;
-        *)      err "Unknown exclude subcommand: $subcmd"; exit 1 ;;
+    [[ $# -lt 1 ]] && { err "Usage: $0 add <include|exclude> <cidr>"; exit 1; }
+    list_add "$kind" "$1"
+}
+
+cmd_del() {
+    local kind=""
+    if [[ "${1:-}" == "include" || "${1:-}" == "exclude" ]]; then
+        kind="$1"; shift || true
+    fi
+    [[ $# -lt 1 ]] && { err "Usage: $0 del [include|exclude] <cidr>"; exit 1; }
+    local net="$1"
+    validate_cidr "$net"
+
+    if [[ -n "$kind" ]]; then
+        list_remove "$kind" "$net"
+        return
+    fi
+
+    local found=0
+    local file
+    for k in include exclude; do
+        file="$(list_file "$k")"
+        if [[ -f "$file" ]] && grep -qxF "$net" "$file"; then
+            list_remove "$k" "$net"
+            (( found++ )) || true
+        fi
+    done
+    if (( found == 0 )); then
+        err "$net not found in any list."
+        exit 1
+    elif (( found > 1 )); then
+        log "Warning: $net was found in both lists."
+    fi
+}
+
+cmd_clear() {
+    local kind="${1:-}"
+    case "$kind" in
+        include)  list_clear include ;;
+        exclude)  list_clear exclude ;;
+        "")       list_clear include; list_clear exclude ;;
+        *)        err "Unknown list kind: $kind (expected include or exclude)"; exit 1 ;;
     esac
 }
 
@@ -414,8 +452,10 @@ Commands:
   update_sber    apply in order: remove_sber, then install_sber
                  useful after SberCloud VPN connection is re-established.
   status         Show current routing state
-  include add|remove|list|clear [CIDR]  Manage user-include override list
-  exclude add|remove|list|clear [CIDR]  Manage user-exclude override list
+  list [include|exclude]               Show override list(s)
+  add <include|exclude> <CIDR>         Add network to override list
+  del [include|exclude] <CIDR>         Remove network (searches both if kind omitted)
+  clear [include|exclude]              Clear override list(s)
 
 Options:
   --quiet       Suppress progress output (errors only)
@@ -440,9 +480,9 @@ while [[ $# -gt 0 ]]; do
         --use-cache) USE_CACHE=1; shift ;;
         --no-use-cache) USE_CACHE=0; shift ;;
         --help)    echo "$USAGE"; exit 0 ;;
-        include|exclude)
+        list|add|del|clear)
             COMMAND="$1"; shift
-            SUBCMD="${1:-}"; shift || true
+            KIND="${1:-}"; shift || true
             break
             ;;
         install*|remove*|update*|status) COMMAND="$1"; shift ;;
@@ -669,8 +709,8 @@ cmd_status() {
     echo "Exclude overrides: ${exc_count}"
 }
 
-if [[ "$COMMAND" == "include" || "$COMMAND" == "exclude" ]]; then
-    "cmd_$COMMAND" "$SUBCMD" "$@"
+if [[ "$COMMAND" == "list" || "$COMMAND" == "add" || "$COMMAND" == "del" || "$COMMAND" == "clear" ]]; then
+    "cmd_$COMMAND" "$KIND" "$@"
 else
     "cmd_$COMMAND"
 fi

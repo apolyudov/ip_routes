@@ -84,18 +84,20 @@ Verifies routing correctness by resolving sites and checking which routing table
 Manage custom network overrides that are applied on every `install` and `update`:
 
 ```bash
-./ru-routes.sh include add 10.0.0.0/8        # Force-include a network
-./ru-routes.sh include remove 10.0.0.0/8     # Remove from include list
-./ru-routes.sh include list                  # Show current include list
-./ru-routes.sh include clear                 # Clear all includes
+./ru-routes.sh add include 10.0.0.0/8        # Force-include a network
+./ru-routes.sh del include 10.0.0.0/8        # Remove from include list
+./ru-routes.sh list                           # Show all override lists
+./ru-routes.sh list include                   # Show include list only
+./ru-routes.sh clear                          # Clear all overrides
+./ru-routes.sh clear include                  # Clear include list only
 
-./ru-routes.sh exclude add 192.168.0.0/16    # Force-exclude a network
-./ru-routes.sh exclude remove 192.168.0.0/16
-./ru-routes.sh exclude list
-./ru-routes.sh exclude clear
+./ru-routes.sh add exclude 192.168.0.0/16    # Force-exclude a network
+./ru-routes.sh del 10.0.0.0/8                # Remove from whichever list has it
 ```
 
 Lists are stored in `~/.local/ru-routes/user-include.lst` and `~/.local/ru-routes/user-exclude.lst` (one CIDR per line). During `install` and `update`, excluded networks are removed from the subnet list first, then included networks are appended. The result replaces what goes into the routing table.
+
+`del` without a kind specifier searches both lists: removes from whichever matches, removes from both with a warning if found in both, or errors if not found.
 
 ## Configuration
 
