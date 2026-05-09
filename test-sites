@@ -11,6 +11,9 @@ reg.ru
 sberdevices.ru
 # Chinese
 z.ai
+# Github (140.82.112.0/20) is still available and popular. save on intl traffic.
+# it must be added with "ru-routes.sh add include 140.82.112.0/20"
+github.com
 ""
 )
 
