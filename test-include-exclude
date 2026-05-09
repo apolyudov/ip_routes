@@ -1,0 +1,244 @@
+#!/bin/bash
+set -euo pipefail
+
+# Tests for include/exclude list management in ru-routes.sh
+# Uses an isolated BASE_DIR so no real config is affected.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEST_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEST_DIR"' EXIT
+
+pass=0
+fail=0
+
+assert_eq() {
+    local label=$1 expected=$2 actual=$3
+    if [[ "$expected" == "$actual" ]]; then
+        (( pass++ )) || true
+    else
+        (( fail++ )) || true
+        echo "FAIL: $label"
+        echo "  expected: $expected"
+        echo "  actual:   $actual"
+    fi
+}
+
+assert_file_exists() {
+    local label=$1 file=$2
+    if [[ -f "$file" ]]; then
+        (( pass++ )) || true
+    else
+        (( fail++ )) || true
+        echo "FAIL: $label — file not found: $file"
+    fi
+}
+
+assert_file_missing() {
+    local label=$1 file=$2
+    if [[ ! -f "$file" ]]; then
+        (( pass++ )) || true
+    else
+        (( fail++ )) || true
+        echo "FAIL: $label — file should not exist: $file"
+    fi
+}
+
+assert_exit() {
+    local label=$1 expected=$2; shift 2
+    local actual
+    actual=$(BASE_DIR="$TEST_DIR" "$SCRIPT_DIR/ru-routes.sh" "$@" 2>&1) && rc=$? || rc=$?
+    if [[ "$rc" -eq "$expected" ]]; then
+        (( pass++ )) || true
+    else
+        (( fail++ )) || true
+        echo "FAIL: $label"
+        echo "  expected exit: $expected"
+        echo "  actual exit:   $rc"
+        echo "  output: $actual"
+    fi
+}
+
+run() { BASE_DIR="$TEST_DIR" "$SCRIPT_DIR/ru-routes.sh" "$@" 2>/dev/null; }
+capture() { BASE_DIR="$TEST_DIR" "$SCRIPT_DIR/ru-routes.sh" "$@" 2>&1; }
+
+INC_FILE="$TEST_DIR/user-include.lst"
+EXC_FILE="$TEST_DIR/user-exclude.lst"
+
+# ── include add ──────────────────────────────────────────────────────
+echo "=== include add ==="
+
+run include add 10.0.0.0/8
+assert_file_exists "add creates file" "$INC_FILE"
+assert_eq "add writes CIDR" "10.0.0.0/8" "$(cat "$INC_FILE")"
+
+run include add 172.16.0.0/12
+assert_eq "add second entry" "2" "$(wc -l < "$INC_FILE")"
+
+run include add 10.0.0.0/8
+assert_eq "dedup ignored" "2" "$(wc -l < "$INC_FILE")"
+
+# ── include list ─────────────────────────────────────────────────────
+echo "=== include list ==="
+
+out=$(run include list)
+assert_eq "list shows entries" "10.0.0.0/8
+172.16.0.0/12" "$out"
+
+# ── include remove ───────────────────────────────────────────────────
+echo "=== include remove ==="
+
+run include remove 10.0.0.0/8
+assert_eq "remove leaves one" "1" "$(wc -l < "$INC_FILE")"
+assert_eq "remaining entry" "172.16.0.0/12" "$(cat "$INC_FILE")"
+
+run include remove 172.16.0.0/12
+assert_file_missing "remove last deletes file" "$INC_FILE"
+
+# ── include list (empty) ─────────────────────────────────────────────
+echo "=== include list (empty) ==="
+
+out=$(run include list)
+assert_eq "empty list" "(empty)" "$out"
+
+# ── include clear ────────────────────────────────────────────────────
+echo "=== include clear ==="
+
+run include add 10.0.0.0/8
+run include clear
+assert_file_missing "clear deletes file" "$INC_FILE"
+
+out=$(run include clear 2>&1)
+assert_eq "clear idempotent" "0" "$?"  # no error
+
+# ── exclude (same CRUD) ─────────────────────────────────────────────
+echo "=== exclude add/remove/list/clear ==="
+
+run exclude add 192.168.0.0/16
+assert_file_exists "exclude add creates file" "$EXC_FILE"
+assert_eq "exclude entry" "192.168.0.0/16" "$(cat "$EXC_FILE")"
+
+run exclude add 10.10.0.0/16
+assert_eq "exclude two entries" "2" "$(wc -l < "$EXC_FILE")"
+
+out=$(run exclude list)
+assert_eq "exclude list" "192.168.0.0/16
+10.10.0.0/16" "$out"
+
+run exclude remove 192.168.0.0/16
+assert_eq "exclude remove" "1" "$(wc -l < "$EXC_FILE")"
+
+run exclude clear
+assert_file_missing "exclude clear" "$EXC_FILE"
+
+# ── validation ───────────────────────────────────────────────────────
+echo "=== validation ==="
+
+assert_exit "invalid CIDR exits 1" 1 include add "not-a-cidr"
+assert_exit "missing arg exits 1" 1 include add
+assert_exit "unknown subcmd exits 1" 1 include bogus
+assert_exit "exclude missing arg" 1 exclude add
+
+# ── apply_user_overrides ────────────────────────────────────────────
+echo "=== apply_user_overrides ==="
+
+# Source the functions so we can test apply_user_overrides directly
+# (it's an internal function, not exposed via CLI)
+SUBNET_FILE="$TEST_DIR/test-subnets.lst"
+
+printf "1.1.1.0/24\n2.2.2.0/24\n3.3.3.0/24\n" > "$SUBNET_FILE"
+printf "2.2.2.0/24\n" > "$EXC_FILE"
+printf "10.0.0.0/8\n" > "$INC_FILE"
+
+# Source just the override logic
+(
+    BASE_DIR="$TEST_DIR"
+    QUIET=1
+    log() { :; }
+    err() { echo "ERROR: $@" >&2; }
+
+    # Extract and source the relevant functions
+    source <(sed -n '/^list_file()/,/^cmd_include()/p' "$SCRIPT_DIR/ru-routes.sh" | head -n -1)
+    apply_user_overrides "$SUBNET_FILE"
+)
+
+actual=$(cat "$SUBNET_FILE")
+assert_eq "exclude removes, include adds" "1.1.1.0/24
+3.3.3.0/24
+10.0.0.0/8" "$actual"
+
+# Test: include doesn't duplicate
+printf "1.1.1.0/24\n10.0.0.0/8\n" > "$SUBNET_FILE"
+printf "" > "$EXC_FILE"
+printf "10.0.0.0/8\n172.16.0.0/12\n" > "$INC_FILE"
+
+(
+    BASE_DIR="$TEST_DIR"
+    QUIET=1
+    log() { :; }
+    err() { echo "ERROR: $@" >&2; }
+    source <(sed -n '/^list_file()/,/^cmd_include()/p' "$SCRIPT_DIR/ru-routes.sh" | head -n -1)
+    apply_user_overrides "$SUBNET_FILE"
+)
+
+actual=$(cat "$SUBNET_FILE")
+assert_eq "include dedups against file" "1.1.1.0/24
+10.0.0.0/8
+172.16.0.0/12" "$actual"
+
+# Test: no override files = no change
+rm -f "$INC_FILE" "$EXC_FILE"
+printf "1.1.1.0/24\n2.2.2.0/24\n" > "$SUBNET_FILE"
+
+(
+    BASE_DIR="$TEST_DIR"
+    QUIET=1
+    log() { :; }
+    err() { echo "ERROR: $@" >&2; }
+    source <(sed -n '/^list_file()/,/^cmd_include()/p' "$SCRIPT_DIR/ru-routes.sh" | head -n -1)
+    apply_user_overrides "$SUBNET_FILE"
+)
+
+actual=$(cat "$SUBNET_FILE")
+assert_eq "no overrides = no change" "1.1.1.0/24
+2.2.2.0/24" "$actual"
+
+# ── status shows override counts ────────────────────────────────────
+echo "=== status override counts ==="
+
+# status requires a saved config — write a minimal one
+mkdir -p "$TEST_DIR/cache"
+cat > "$TEST_DIR/cache/config" <<CONF
+IFACE=""
+TABLE="ru_routes"
+TABLE_ID="200"
+PRIORITY="500"
+GATEWAY=""
+SOURCE_URL="https://example.com"
+CACHE_DIR="$TEST_DIR/cache"
+CONF
+
+printf "10.0.0.0/8\n172.16.0.0/12\n" > "$INC_FILE"
+printf "192.168.0.0/16\n" > "$EXC_FILE"
+
+out=$(BASE_DIR="$TEST_DIR" "$SCRIPT_DIR/ru-routes.sh" status 2>&1)
+echo "$out" | grep -q "Include overrides: 2 entries"
+assert_eq "status include count" "0" "$?"
+echo "$out" | grep -q "Exclude overrides: 1 entries"
+assert_eq "status exclude count" "0" "$?"
+
+# Clean up for next test
+rm -f "$INC_FILE" "$EXC_FILE"
+
+out=$(BASE_DIR="$TEST_DIR" "$SCRIPT_DIR/ru-routes.sh" status 2>&1)
+echo "$out" | grep -q "Include overrides: none"
+assert_eq "status include none" "0" "$?"
+echo "$out" | grep -q "Exclude overrides: none"
+assert_eq "status exclude none" "0" "$?"
+
+# ── Summary ──────────────────────────────────────────────────────────
+echo ""
+echo "================================"
+echo "Passed: $pass"
+echo "Failed: $fail"
+[[ $fail -eq 0 ]] && echo "ALL TESTS PASSED" || echo "SOME TESTS FAILED"
+exit $fail

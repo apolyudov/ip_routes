@@ -79,6 +79,24 @@ Verifies routing correctness by resolving sites and checking which routing table
 - Sber sites go through `sber_cloud_tun`
 - Non-Russian sites do **not** go through `sber_cloud_tun`
 
+### User include/exclude lists
+
+Manage custom network overrides that are applied on every `install` and `update`:
+
+```bash
+./ru-routes.sh include add 10.0.0.0/8        # Force-include a network
+./ru-routes.sh include remove 10.0.0.0/8     # Remove from include list
+./ru-routes.sh include list                  # Show current include list
+./ru-routes.sh include clear                 # Clear all includes
+
+./ru-routes.sh exclude add 192.168.0.0/16    # Force-exclude a network
+./ru-routes.sh exclude remove 192.168.0.0/16
+./ru-routes.sh exclude list
+./ru-routes.sh exclude clear
+```
+
+Lists are stored in `~/.local/ru-routes/user-include.lst` and `~/.local/ru-routes/user-exclude.lst` (one CIDR per line). During `install` and `update`, excluded networks are removed from the subnet list first, then included networks are appended. The result replaces what goes into the routing table.
+
 ## Configuration
 
 Set via environment variables or `ru-routes.conf` (placed next to the script):

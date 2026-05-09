@@ -14,7 +14,7 @@ LOCK_FILE="/tmp/ru-routes.lock"
 QUIET=0
 USE_CACHE=1
 
-cd $(dirname $(readlink $0))
+cd $(dirname "$(readlink -f "$0" || echo "$0")")
 
 mkdir -p $BASE_DIR
 
@@ -184,6 +184,132 @@ validate_subnets() {
     log "Validated: $line_count subnets."
 }
 
+# ── User override lists ──────────────────────────────────────────────
+list_file() {
+    local kind=$1
+    echo "$BASE_DIR/user-${kind}.lst"
+}
+
+validate_cidr() {
+    local net=$1
+    if ! [[ "$net" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
+        err "Invalid CIDR format: $net (expected a.b.c.d/prefix)"
+        exit 1
+    fi
+}
+
+list_add() {
+    local kind=$1
+    local net=$2
+    validate_cidr "$net"
+    local file
+    file="$(list_file "$kind")"
+    if [[ -f "$file" ]] && grep -qxF "$net" "$file"; then
+        log "$net already in $kind list."
+        return 0
+    fi
+    echo "$net" >> "$file"
+    log "Added $net to $kind list."
+}
+
+list_remove() {
+    local kind=$1
+    local net=$2
+    validate_cidr "$net"
+    local file
+    file="$(list_file "$kind")"
+    if [[ ! -f "$file" ]]; then
+        log "$kind list is empty."
+        return 0
+    fi
+    local tmp
+    tmp="$(mktemp)"
+    grep -vxF "$net" "$file" > "$tmp" || true
+    if [[ -s "$tmp" ]]; then
+        mv "$tmp" "$file"
+    else
+        rm -f "$tmp" "$file"
+    fi
+    log "Removed $net from $kind list."
+}
+
+list_list() {
+    local kind=$1
+    local file
+    file="$(list_file "$kind")"
+    if [[ -f "$file" ]] && [[ -s "$file" ]]; then
+        cat "$file"
+    else
+        echo "(empty)"
+    fi
+}
+
+list_clear() {
+    local kind=$1
+    local file
+    file="$(list_file "$kind")"
+    if [[ -f "$file" ]]; then
+        rm -f "$file"
+        log "Cleared $kind list."
+    else
+        log "$kind list already empty."
+    fi
+}
+
+apply_user_overrides() {
+    local subnet_file=$1
+    local exc_file inc_file
+    exc_file="$(list_file exclude)"
+    inc_file="$(list_file include)"
+
+    # Exclude: remove exact matches
+    if [[ -f "$exc_file" ]]; then
+        local tmp
+        tmp="$(mktemp)"
+        grep -vxFf "$exc_file" "$subnet_file" > "$tmp"
+        mv "$tmp" "$subnet_file"
+        local exc_count
+        exc_count="$(wc -l < "$exc_file")"
+        log "Applied exclude list: $exc_count entries."
+    fi
+
+    # Include: append entries not already present
+    if [[ -f "$inc_file" ]]; then
+        local added=0
+        while IFS= read -r net; do
+            if ! grep -qxF "$net" "$subnet_file"; then
+                echo "$net" >> "$subnet_file"
+                (( added++ )) || true
+            fi
+        done < "$inc_file"
+        log "Applied include list: $added new entries added."
+    fi
+}
+
+cmd_include() {
+    local subcmd=$1
+    shift || true
+    case "$subcmd" in
+        add)    [[ $# -lt 1 ]] && { err "Usage: $0 include add <cidr>"; exit 1; }; list_add include "$1" ;;
+        remove) [[ $# -lt 1 ]] && { err "Usage: $0 include remove <cidr>"; exit 1; }; list_remove include "$1" ;;
+        list)   list_list include ;;
+        clear)  list_clear include ;;
+        *)      err "Unknown include subcommand: $subcmd"; exit 1 ;;
+    esac
+}
+
+cmd_exclude() {
+    local subcmd=$1
+    shift || true
+    case "$subcmd" in
+        add)    [[ $# -lt 1 ]] && { err "Usage: $0 exclude add <cidr>"; exit 1; }; list_add exclude "$1" ;;
+        remove) [[ $# -lt 1 ]] && { err "Usage: $0 exclude remove <cidr>"; exit 1; }; list_remove exclude "$1" ;;
+        list)   list_list exclude ;;
+        clear)  list_clear exclude ;;
+        *)      err "Unknown exclude subcommand: $subcmd"; exit 1 ;;
+    esac
+}
+
 # ── Route management ─────────────────────────────────────────────────
 add_routes() {
     local subnet_file="$1"
@@ -288,6 +414,8 @@ Commands:
   update_sber    apply in order: remove_sber, then install_sber
                  useful after SberCloud VPN connection is re-established.
   status         Show current routing state
+  include add|remove|list|clear [CIDR]  Manage user-include override list
+  exclude add|remove|list|clear [CIDR]  Manage user-exclude override list
 
 Options:
   --quiet       Suppress progress output (errors only)
@@ -312,6 +440,11 @@ while [[ $# -gt 0 ]]; do
         --use-cache) USE_CACHE=1; shift ;;
         --no-use-cache) USE_CACHE=0; shift ;;
         --help)    echo "$USAGE"; exit 0 ;;
+        include|exclude)
+            COMMAND="$1"; shift
+            SUBCMD="${1:-}"; shift || true
+            break
+            ;;
         install*|remove*|update*|status) COMMAND="$1"; shift ;;
         *)         err "Unknown argument: $1"; echo "$USAGE" >&2; exit 1 ;;
     esac
@@ -364,6 +497,8 @@ cmd_install() {
         err "Subnet validation failed. Aborting."
         exit 1
     fi
+
+    apply_user_overrides "$tmpfile"
 
     # table for russian routes
     echo "Adding configuration for ru_routes"
@@ -469,6 +604,8 @@ cmd_update() {
         exit 1
     fi
 
+    apply_user_overrides "$tmpfile"
+
     local name_base="$tmpfile"
     local name_add="$BASE_DIR/ip_allow-$TABLE-add.lst"
     local name_del="$BASE_DIR/ip_allow-$TABLE-del.lst"
@@ -519,6 +656,21 @@ cmd_status() {
     echo "Routes: ${route_count}"
     echo "Rule: ${rule_status}"
     echo "Last updated: ${last_update}"
+
+    local inc_count="none"
+    local exc_count="none"
+    local inc_file exc_file
+    inc_file="$(list_file include)"
+    exc_file="$(list_file exclude)"
+    [[ -f "$inc_file" ]] && [[ -s "$inc_file" ]] && inc_count="$(wc -l < "$inc_file") entries"
+    [[ -f "$exc_file" ]] && [[ -s "$exc_file" ]] && exc_count="$(wc -l < "$exc_file") entries"
+
+    echo "Include overrides: ${inc_count}"
+    echo "Exclude overrides: ${exc_count}"
 }
 
-"cmd_$COMMAND"
+if [[ "$COMMAND" == "include" || "$COMMAND" == "exclude" ]]; then
+    "cmd_$COMMAND" "$SUBCMD" "$@"
+else
+    "cmd_$COMMAND"
+fi

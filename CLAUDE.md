@@ -19,6 +19,8 @@ sudo ./ru-routes.sh install        # Download subnet list, register routing tabl
 sudo ./ru-routes.sh update         # Re-download and apply diffs (incremental add/del)
 sudo ./ru-routes.sh remove         # Flush routes, remove ip rule, clean radb-tools data
 sudo ./ru-routes.sh status         # Show routing state (table, rule, route count, last update)
+sudo ./ru-routes.sh include add|remove|list|clear [CIDR]   # Manage user-include list (force-add networks)
+sudo ./ru-routes.sh exclude add|remove|list|clear [CIDR]   # Manage user-exclude list (force-remove networks)
 
 sudo ./ru-routes.sh install_sber   # Set up sber_cloud_pub (50) and sber_cloud_tun (100) tables
 sudo ./ru-routes.sh remove_sber    # Flush and remove sber_cloud tables
@@ -76,16 +78,18 @@ ip_whois.py           WHOIS lookup tool for routes
 
 ### Data flow (install)
 
-1. `ru-routes.sh install` calls `radb-tools/dbctl pull_db` + `update_ip` to build `ip_allow.lst`
-2. `ip_allow.lst` = `ip_RU.lst` (aggregated Russian prefixes) + `ip_extra.txt` (manual additions)
-3. Routes are added to a custom routing table (default: `ru_routes`, ID 200)
-4. An `ip rule` entry directs traffic through this table at the configured priority
+1. `radb-tools/dbctl pull_db` + `update_ip RU` + `update_ip CN` + `merge_ip` produces `ip_allow.lst` (RU + CN aggregated prefixes)
+2. Subnet list is validated (non-empty, CIDR format check)
+3. User overrides applied: `apply_user_overrides()` removes excluded CIDRs, then appends included CIDRs
+4. Previous routes in the table are flushed, new routes are added
+5. An `ip rule` entry directs traffic through this table at the configured priority
 
 ### Data flow (update)
 
-1. Re-downloads the subnet list
-2. `calc_diffs()` computes add/del diffs against the current routing table
-3. Only adds new routes and removes stale ones — rule stays in place
+1. Re-downloads and validates the subnet list
+2. User overrides applied (same as install step 3)
+3. `calc_diffs()` computes add/del diffs against the current routing table
+4. Only adds new routes and removes stale ones — rule stays in place
 
 ### Routing table structure
 
@@ -118,3 +122,5 @@ Each check prints PASSED/FAILED. All four must pass before considering changes t
 - All route operations are idempotent where possible
 - `ru-routes.sh` uses two-phase route moves (add first, delete only on success) to avoid route loss
 - radb-tools venv is at `radb-tools/venv/` (Python 3.14)
+- Every new feature must be documented in `README.md` before the task is considered complete
+- Commit structure: small features → single commit (docs + tests + code). Larger features → sequence: docs → tests/interfaces → implementation. See `feature_commit` skill.
