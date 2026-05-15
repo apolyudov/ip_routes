@@ -31,13 +31,16 @@ IFACE=eth0 GATEWAY=10.0.0.1 ./ru-routes.sh install
 
 ```bash
 ./ru-routes.sh install        # Download subnets, create table, add routes and rule
-./ru-routes.sh update         # Re-download and apply incremental diffs
+./ru-routes.sh update         # Re-download and apply incremental diffs (both phases)
+./ru-routes.sh update_db      # Phase 1: re-download subnet list and refresh cache
+./ru-routes.sh update_tables  # Phase 2: sync routes from cache; restore ip rule if missing
 ./ru-routes.sh remove         # Flush routes, remove rule, clean up
 ./ru-routes.sh status         # Show current routing state
 
 # Options
 ./ru-routes.sh --quiet install         # Suppress progress output
 ./ru-routes.sh --no-use-cache update   # Don't fall back to cached subnet list
+./ru-routes.sh update_tables           # After reboot: restore ip rule and sync routes
 ```
 
 #### SberCloud VPN management
@@ -95,7 +98,7 @@ Manage custom network overrides that are applied on every `install` and `update`
 ./ru-routes.sh del 10.0.0.0/8                # Remove from whichever list has it
 ```
 
-Lists are stored in `~/.local/ru-routes/user-include.lst` and `~/.local/ru-routes/user-exclude.lst` (one CIDR per line). During `install` and `update`, excluded networks are removed from the subnet list first, then included networks are appended. The result replaces what goes into the routing table.
+Lists are stored in `~/.local/ru-routes/user-include.lst` and `~/.local/ru-routes/user-exclude.lst` (one CIDR per line). During `install`, `update`, and `update_tables`, excluded networks are removed from the subnet list first, then included networks are appended. The result replaces what goes into the routing table.
 
 `del` without a kind specifier searches both lists: removes from whichever matches, removes from both with a warning if found in both, or errors if not found.
 
@@ -112,7 +115,7 @@ Set via environment variables or `ru-routes.conf` (placed next to the script):
 | `PRIORITY` | `500` | ip rule priority |
 | `CACHE_DIR` | `~/.local/ru-routes/cache` | Cache directory |
 
-Configuration is saved to `$CACHE_DIR/config` on `install`. Subsequent `update`, `remove`, and `status` commands read it back automatically.
+Configuration is saved to `$CACHE_DIR/config` on `install`. Subsequent `update`, `update_db`, `update_tables`, `remove`, and `status` commands read it back automatically.
 
 ## How it works
 
@@ -127,9 +130,14 @@ Configuration is saved to `$CACHE_DIR/config` on `install`. Subsequent `update`,
 
 ### Updates
 
-On `update`, the tool re-downloads the subnet list and computes diffs against the current routing table. Only new routes are added and stale ones removed — the ip rule stays in place.
+`update` runs two phases in order:
 
-Downloaded subnet lists are validated (checked for non-empty, CIDR format) before any routes are modified. If validation or download fails, a previously cached list is used as fallback (`--no-use-cache` to disable).
+1. **`update_db`** — re-downloads the subnet list (via `radb-tools`), validates it, applies user overrides, and writes `$CACHE_DIR/subnet.lst`.
+2. **`update_tables`** — reads the cached list, computes diffs against the current routing table, adds/removes routes incrementally, registers the routing table in `/etc/iproute2/rt_tables` if needed, and ensures the `ip rule` exists with the configured priority.
+
+Either phase can be run alone. After a reboot (when `ip rule` entries are lost but routes may still be present), run `update_tables` to restore the rule and reconcile routes against the cache.
+
+Downloaded subnet lists are validated (checked for non-empty, CIDR format) before any routes are modified. If validation or download fails during `update_db` / `update`, a previously cached list is used as fallback (`--no-use-cache` to disable).
 
 ### SberCloud routing
 

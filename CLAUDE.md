@@ -16,7 +16,9 @@ All scripts require root/sudo. Designed for Linux with `iproute2`.
 
 ```bash
 sudo ./ru-routes.sh install        # Download subnet list, register routing table, add routes and ip rule
-sudo ./ru-routes.sh update         # Re-download and apply diffs (incremental add/del)
+sudo ./ru-routes.sh update         # Re-download and apply diffs (update_db + update_tables)
+sudo ./ru-routes.sh update_db      # Re-download subnet list and refresh cache only
+sudo ./ru-routes.sh update_tables  # Sync routes from cache; restore ip rule if missing
 sudo ./ru-routes.sh remove         # Flush routes, remove ip rule, clean radb-tools data
 sudo ./ru-routes.sh status         # Show routing state (table, rule, route count, last update)
 sudo ./ru-routes.sh list [include|exclude]               # Show override list(s) (both if omitted)
@@ -88,10 +90,21 @@ ip_whois.py           WHOIS lookup tool for routes
 
 ### Data flow (update)
 
+`update` = `update_db` + `update_tables`.
+
+**update_db**
+
 1. Re-downloads and validates the subnet list
 2. User overrides applied (same as install step 3)
-3. `calc_diffs()` computes add/del diffs against the current routing table
-4. Only adds new routes and removes stale ones — rule stays in place
+3. Writes `$CACHE_DIR/subnet.lst` and updates `last-update`
+
+**update_tables**
+
+1. Loads cached subnet list; re-applies user overrides (picks up list changes without re-download)
+2. Registers routing table if missing (`register_table`)
+3. Ensures `ip rule` exists with configured priority (`ensure_rule` — recovers after reboot)
+4. `calc_diffs()` computes add/del diffs against the current routing table
+5. Only adds new routes and removes stale ones
 
 ### Routing table structure
 

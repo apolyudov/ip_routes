@@ -418,16 +418,29 @@ flush_routes() {
 }
 
 # ── Rule management ──────────────────────────────────────────────────
-add_rule() {
-    # Idempotent: skip if rule already exists
+ensure_rule() {
+    # Ensure ip rule exists with the configured priority (recover after reboot).
     local table=$1
     local pri=$2
-    if ip rule show | grep -q "lookup $table"; then
-        log "Rule for table $table already exists."
-        return 0
+    local rule_line existing_prio
+    rule_line="$(ip rule show 2>/dev/null | grep "lookup $table" || true)"
+    if [[ -n "$rule_line" ]]; then
+        existing_prio="$(echo "$rule_line" | grep -oP '^\d+' | head -1)"
+        if [[ "$existing_prio" == "$pri" ]]; then
+            log "Rule for table $table already present (priority $pri)."
+            return 0
+        fi
+        log "Rule for table $table has priority $existing_prio (expected $pri). Recreating."
+        sudo ip rule del lookup "$table"
+    else
+        log "Rule for table $table is missing. Adding."
     fi
     sudo ip rule add from all table "$table" priority "$pri"
-    log "Added ip rule: table $table priority $pri"
+    log "Ensured ip rule: table $table priority $pri"
+}
+
+add_rule() {
+    ensure_rule "$@"
 }
 
 remove_rule() {
@@ -448,7 +461,9 @@ Commands:
   install_sber   Move sber_cloud rules from main to its own tables
   remove         Flush routes from table, remove ip rule
   remove_sber    Delete sber_cloud tables
-  update         Re-download routes and apply diffs (keep rule)
+  update         Re-download routes and apply diffs (update_db + update_tables)
+  update_db      Re-download subnet list and refresh cache only
+  update_tables  Apply route diffs from cache; ensure routing table and ip rule
   update_sber    apply in order: remove_sber, then install_sber
                  useful after SberCloud VPN connection is re-established.
   status         Show current routing state
@@ -472,7 +487,10 @@ Configuration (environment variables or ru-routes.conf):
   CACHE_DIR   Cache directory (default: ~/.local/ru-routes/cache)
 
 Config persistence: 'install' saves config to \$CACHE_DIR/config.
-  update/remove/status read it back so env vars need not be repeated."
+  update/remove/status read it back so env vars need not be repeated.
+
+  update_db writes \$CACHE_DIR/subnet.lst; update_tables reads it.
+  Run update_tables alone after reboot to restore ip rules and sync routes."
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -613,54 +631,110 @@ calc_diffs() {
   echo "Total $add_cnt insertions and $del_cnt removals for \"$table\" required"
 }
 
-cmd_update() {
-    save_env_overrides
-    load_config
-
-    if [[ -z "${IFACE:-}" ]]; then
-        err "IFACE not found in saved config. Run 'install' first."
-        exit 1
-    fi
-
-    acquire_lock
-
-    TMPFILE="$(mktemp --tmpdir=$BASE_DIR)"
-    cleanup_update() { rm -f "$TMPFILE"; release_lock; }
-    trap cleanup_update EXIT
-    local tmpfile=$TMPFILE
+_do_update_db() {
+    local tmpfile=$1
 
     if ! download_subnets "$tmpfile"; then
         if (( USE_CACHE )) && [[ -f "$CACHE_DIR/subnet.lst" ]]; then
             log "Using cached subnet list."
             cp "$CACHE_DIR/subnet.lst" "$tmpfile"
         else
-            err "Download failed and no cache available. Routes unchanged."
-            exit 1
+            err "Download failed and no cache available."
+            return 1
         fi
     fi
 
     if ! validate_subnets "$tmpfile"; then
-        err "Subnet validation failed. Routes unchanged."
-        exit 1
+        err "Subnet validation failed."
+        return 1
     fi
 
     apply_user_overrides "$tmpfile"
-
-    local name_base="$tmpfile"
-    local name_add="$BASE_DIR/ip_allow-$TABLE-add.lst"
-    local name_del="$BASE_DIR/ip_allow-$TABLE-del.lst"
-
-    calc_diffs $TABLE $name_base $name_del $name_add
-    del_routes "$name_del" $TABLE
-    add_routes "$name_add" $TABLE $IFACE $GATEWAY
-    # Rule stays in place — no need to touch it
 
     mkdir -p "$CACHE_DIR"
     cp "$tmpfile" "$CACHE_DIR/subnet.lst"
     date '+%Y-%m-%d %H:%M:%S' > "$CACHE_DIR/last-update"
     save_config
+    return 0
+}
 
-    tmpfile=""
+_do_update_tables() {
+    local subnet_file=$1
+    local name_add="$BASE_DIR/ip_allow-$TABLE-add.lst"
+    local name_del="$BASE_DIR/ip_allow-$TABLE-del.lst"
+
+    register_table "$TABLE" "$TABLE_ID"
+    ensure_rule "$TABLE" "$PRIORITY"
+
+    calc_diffs "$TABLE" "$subnet_file" "$name_del" "$name_add"
+    del_routes "$name_del" "$TABLE"
+    add_routes "$name_add" "$TABLE" "$IFACE" "$GATEWAY"
+}
+
+require_iface_config() {
+    if [[ -z "${IFACE:-}" ]]; then
+        err "IFACE not found in saved config. Run 'install' first."
+        exit 1
+    fi
+}
+
+require_subnet_cache() {
+    if [[ ! -f "$CACHE_DIR/subnet.lst" ]]; then
+        err "No cached subnet list at $CACHE_DIR/subnet.lst. Run 'update_db' or 'install' first."
+        exit 1
+    fi
+}
+
+cmd_update_db() {
+    save_env_overrides
+    load_config
+    acquire_lock
+
+    TMPFILE="$(mktemp --tmpdir=$BASE_DIR)"
+    cleanup_update_db() { rm -f "$TMPFILE"; release_lock; }
+    trap cleanup_update_db EXIT
+
+    _do_update_db "$TMPFILE"
+    TMPFILE=""
+    log "update_db complete."
+}
+
+cmd_update_tables() {
+    save_env_overrides
+    load_config
+    require_iface_config
+    require_subnet_cache
+    acquire_lock
+
+    TMPFILE="$(mktemp --tmpdir=$BASE_DIR)"
+    cleanup_update_tables() { rm -f "$TMPFILE"; release_lock; }
+    trap cleanup_update_tables EXIT
+
+    cp "$CACHE_DIR/subnet.lst" "$TMPFILE"
+    apply_user_overrides "$TMPFILE"
+
+    _do_update_tables "$TMPFILE"
+    TMPFILE=""
+    log "update_tables complete."
+}
+
+cmd_update() {
+    save_env_overrides
+    load_config
+    require_iface_config
+    acquire_lock
+
+    TMPFILE="$(mktemp --tmpdir=$BASE_DIR)"
+    cleanup_update() { rm -f "$TMPFILE"; release_lock; }
+    trap cleanup_update EXIT
+
+    if ! _do_update_db "$TMPFILE"; then
+        err "update_db phase failed. Routes unchanged."
+        exit 1
+    fi
+
+    _do_update_tables "$TMPFILE"
+    TMPFILE=""
     log "Update complete."
 }
 
