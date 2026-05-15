@@ -1,0 +1,12 @@
+# Passwordless sudo for openconnect only (vpn.sh uses: sudo -n openconnect ...)
+#
+# Install:
+#   sudo visudo -f /etc/sudoers.d/vpn-openconnect
+# Paste the line below (replace USER), save, chmod 440.
+#
+# Verify:
+#   sudo -n openconnect --version
+
+USER ALL=(root) NOPASSWD: /usr/sbin/openconnect, /usr/bin/openconnect
+
+# If openconnect is elsewhere: which openconnect

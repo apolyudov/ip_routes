@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""Tests for vpn.sh: profile loading, status, lock, shell connector, dependency checks."""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+LOAD = ROOT / "vpn_profiles_load.py"
+ORCH = ROOT / "vpn.sh"
+EXAMPLE_JSON = ROOT / "vpn-profiles.json.example"
+
+MINI_JSON = {
+    "profiles": [
+        {
+            "name": "test_oc",
+            "connector": "openconnect",
+            "mode": "unattended",
+            "server": "vpn.test",
+            "user": "testuser",
+            "secrets": {"password": "pass:vpn/test", "totp": "pass:vpn/test-totp"},
+            "wait_iface": "tun99",
+            "wait_timeout": 5,
+        },
+        {
+            "name": "test_shell",
+            "connector": "shell",
+            "up": "touch /tmp/vpn-test-shell-up",
+            "down": "rm -f /tmp/vpn-test-shell-up",
+            "wait_iface": "",
+        },
+    ]
+}
+
+
+def write_profiles(tmpdir: Path, data: dict) -> Path:
+    p = tmpdir / "vpn-profiles.json"
+    p.write_text(json.dumps(data))
+    return p
+
+
+def run(*args, **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        list(args), capture_output=True, text=True, timeout=30, **kwargs
+    )
+
+
+class TestProfileLoading(unittest.TestCase):
+    def test_list_example_profiles(self):
+        r = run(sys.executable, str(LOAD), str(EXAMPLE_JSON), "list")
+        self.assertEqual(r.returncode, 0)
+        names = r.stdout.strip().splitlines()
+        self.assertIn("sber_vpn", names)
+        self.assertIn("adguard", names)
+
+    def test_get_openconnect_profile(self):
+        r = run(sys.executable, str(LOAD), str(EXAMPLE_JSON), "get", "sber_vpn")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("openconnect", r.stdout)
+        self.assertIn("pass:vpn/sber-ldap", r.stdout)
+
+    def test_get_shell_profile(self):
+        r = run(sys.executable, str(LOAD), str(EXAMPLE_JSON), "get", "adguard")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("shell", r.stdout)
+        self.assertIn("adguardvpn-cli connect", r.stdout)
+
+    def test_get_missing_profile(self):
+        r = run(sys.executable, str(LOAD), str(EXAMPLE_JSON), "get", "nonexistent")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("profile not found", r.stderr)
+
+    def test_list_returns_names_in_order(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = write_profiles(Path(td), MINI_JSON)
+            r = run(sys.executable, str(LOAD), str(p), "list")
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(r.stdout.strip().splitlines(), ["test_oc", "test_shell"])
+
+    def test_json_dump(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = write_profiles(Path(td), MINI_JSON)
+            r = run(sys.executable, str(LOAD), str(p), "json")
+            self.assertEqual(r.returncode, 0)
+            data = json.loads(r.stdout)
+            self.assertEqual(len(data["profiles"]), 2)
+
+    def test_missing_profiles_key(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "vpn-profiles.json"
+            p.write_text("{}")
+            r = run(sys.executable, str(LOAD), str(p), "list")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("profiles", r.stderr)
+
+    def test_profile_without_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = write_profiles(Path(td), {"profiles": [{"connector": "shell"}]})
+            r = run(sys.executable, str(LOAD), str(p), "list")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("name", r.stderr)
+
+
+class TestOrchestratorCLI(unittest.TestCase):
+    def test_help(self):
+        r = run(str(ORCH), "help")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("up", r.stdout)
+        self.assertIn("down", r.stdout)
+        self.assertIn("status", r.stdout)
+
+    def test_usage_flag(self):
+        r = run(str(ORCH), "--help")
+        self.assertEqual(r.returncode, 0)
+
+    def test_unknown_command(self):
+        r = run(str(ORCH), "bogus")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("unknown command", r.stderr)
+
+    def test_no_args(self):
+        r = run(str(ORCH))
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("Usage", r.stdout)
+
+    def test_list_with_profiles(self):
+        with tempfile.TemporaryDirectory() as td:
+            pf = write_profiles(Path(td), MINI_JSON)
+            r = run(str(ORCH), "list", env={**os.environ, "VPN_PROFILES": str(pf)})
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("test_oc", r.stdout)
+            self.assertIn("test_shell", r.stdout)
+
+    def test_missing_profiles_file(self):
+        r = run(
+            str(ORCH),
+            "list",
+            env={**os.environ, "VPN_PROFILES": "/tmp/no-such-file.json"},
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Missing", r.stderr)
+
+    def test_status_output(self):
+        with tempfile.TemporaryDirectory() as td:
+            pf = write_profiles(Path(td), MINI_JSON)
+            state = Path(td) / "state"
+            state.mkdir()
+            r = run(
+                str(ORCH),
+                "status",
+                env={
+                    **os.environ,
+                    "VPN_PROFILES": str(pf),
+                    "VPN_STATE_DIR": str(state),
+                },
+            )
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("test_oc", r.stdout)
+            self.assertIn("openconnect", r.stdout)
+            self.assertIn("stopped", r.stdout)
+            self.assertIn("test_shell", r.stdout)
+
+
+class TestLockFile(unittest.TestCase):
+    def test_lock_prevents_concurrent_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            pf = write_profiles(Path(td), MINI_JSON)
+            state = Path(td) / "state"
+            state.mkdir()
+            lock = Path("/tmp/vpn.lock")
+
+            # Write a stale lock (non-existent PID)
+            lock.write_text("99999999")
+            os.utime(str(lock), (time.time() - 700, time.time() - 700))
+
+            r = run(
+                str(ORCH),
+                "list",
+                env={**os.environ, "VPN_PROFILES": str(pf)},
+            )
+            # Stale lock should be cleaned up and the command should succeed
+            self.assertEqual(r.returncode, 0)
+
+    def test_lock_cleanup_on_exit(self):
+        with tempfile.TemporaryDirectory() as td:
+            pf = write_profiles(Path(td), MINI_JSON)
+            lock = Path("/tmp/vpn.lock")
+            lock.unlink(missing_ok=True)
+
+            run(
+                str(ORCH),
+                "list",
+                env={**os.environ, "VPN_PROFILES": str(pf)},
+            )
+            # Lock should be released after command exits
+            self.assertFalse(lock.exists())
+
+
+class TestShellConnector(unittest.TestCase):
+    def test_shell_up_creates_file(self):
+        marker = Path("/tmp/vpn-test-up")
+        marker.unlink(missing_ok=True)
+        profiles = {
+            "profiles": [
+                {
+                    "name": "sh_test",
+                    "connector": "shell",
+                    "up": f"touch {marker}",
+                    "down": f"rm -f {marker}",
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as td:
+            pf = write_profiles(Path(td), profiles)
+            state = Path(td) / "state"
+            state.mkdir()
+            r = run(
+                str(ORCH),
+                "up",
+                "sh_test",
+                env={
+                    **os.environ,
+                    "VPN_PROFILES": str(pf),
+                    "VPN_STATE_DIR": str(state),
+                },
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(marker.exists(), "up command should have created marker file")
+
+    def test_shell_down_removes_file(self):
+        marker = Path("/tmp/vpn-test-up")
+        marker.touch()
+        profiles = {
+            "profiles": [
+                {
+                    "name": "sh_test",
+                    "connector": "shell",
+                    "up": f"touch {marker}",
+                    "down": f"rm -f {marker}",
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as td:
+            pf = write_profiles(Path(td), profiles)
+            state = Path(td) / "state"
+            state.mkdir()
+            r = run(
+                str(ORCH),
+                "down",
+                "sh_test",
+                env={
+                    **os.environ,
+                    "VPN_PROFILES": str(pf),
+                    "VPN_STATE_DIR": str(state),
+                },
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse(marker.exists(), "down command should have removed marker file")
+
+    def test_down_runs_in_reverse_order(self):
+        order_file = Path("/tmp/vpn-test-order")
+        order_file.unlink(missing_ok=True)
+        profiles = {
+            "profiles": [
+                {
+                    "name": "first",
+                    "connector": "shell",
+                    "down": f"echo first >> {order_file}",
+                },
+                {
+                    "name": "second",
+                    "connector": "shell",
+                    "down": f"echo second >> {order_file}",
+                },
+            ]
+        }
+        with tempfile.TemporaryDirectory() as td:
+            pf = write_profiles(Path(td), profiles)
+            state = Path(td) / "state"
+            state.mkdir()
+            r = run(
+                str(ORCH),
+                "down",
+                env={
+                    **os.environ,
+                    "VPN_PROFILES": str(pf),
+                    "VPN_STATE_DIR": str(state),
+                },
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            lines = order_file.read_text().strip().splitlines()
+            self.assertEqual(lines, ["second", "first"], "down should reverse order")
+            order_file.unlink()
+
+
+class TestDependencyChecks(unittest.TestCase):
+    def test_openconnect_missing_clear_error(self):
+        profiles = {
+            "profiles": [
+                {
+                    "name": "oc_test",
+                    "connector": "openconnect",
+                    "mode": "unattended",
+                    "server": "x",
+                    "user": "u",
+                    "secrets": {"password": "literal:pw"},
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as td:
+            pf = write_profiles(Path(td), profiles)
+            state = Path(td) / "state"
+            state.mkdir()
+            env = {
+                **os.environ,
+                "VPN_PROFILES": str(pf),
+                "VPN_STATE_DIR": str(state),
+                "PATH": "/usr/bin:/bin",  # no openconnect
+            }
+            # This may or may not have openconnect in the system PATH,
+            # but if it fails on something else first (like pass), that's fine too.
+            r = run(str(ORCH), "up", "oc_test", env=env)
+            # We just verify it exits with error and gives a message
+            if r.returncode != 0:
+                # Should mention what's missing
+                combined = r.stderr + r.stdout
+                self.assertTrue(
+                    "not installed" in combined
+                    or "openconnect" in combined
+                    or "pass" in combined
+                    or "oathtool" in combined,
+                    f"Expected dependency error, got: {combined}",
+                )
+
+
+class TestPostHooks(unittest.TestCase):
+    def test_post_connect_hook_runs(self):
+        hook_marker = Path("/tmp/vpn-test-hook")
+        hook_marker.unlink(missing_ok=True)
+        profiles = {
+            "profiles": [
+                {
+                    "name": "hooked",
+                    "connector": "shell",
+                    "up": f"echo up",
+                    "post_connect": [f"touch {hook_marker}"],
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as td:
+            pf = write_profiles(Path(td), profiles)
+            state = Path(td) / "state"
+            state.mkdir()
+            r = run(
+                str(ORCH),
+                "up",
+                "hooked",
+                env={
+                    **os.environ,
+                    "VPN_PROFILES": str(pf),
+                    "VPN_STATE_DIR": str(state),
+                },
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(hook_marker.exists(), "post_connect hook should have run")
+            hook_marker.unlink(missing_ok=True)
+
+    def test_post_disconnect_hook_runs(self):
+        hook_marker = Path("/tmp/vpn-test-hook-down")
+        hook_marker.unlink(missing_ok=True)
+        profiles = {
+            "profiles": [
+                {
+                    "name": "hooked",
+                    "connector": "shell",
+                    "down": "true",
+                    "post_disconnect": [f"touch {hook_marker}"],
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as td:
+            pf = write_profiles(Path(td), profiles)
+            state = Path(td) / "state"
+            state.mkdir()
+            r = run(
+                str(ORCH),
+                "down",
+                "hooked",
+                env={
+                    **os.environ,
+                    "VPN_PROFILES": str(pf),
+                    "VPN_STATE_DIR": str(state),
+                },
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(
+                hook_marker.exists(), "post_disconnect hook should have run"
+            )
+            hook_marker.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

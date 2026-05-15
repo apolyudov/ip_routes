@@ -1,0 +1,35 @@
+{
+  "profiles": [
+    {
+      "name": "sber_vpn",
+      "connector": "openconnect",
+      "mode": "unattended",
+      "server": "vpn.example.com",
+      "user": "YOUR_USERNAME",
+      "secrets": {
+        "password": "pass:vpn/sber-ldap",
+        "totp": "pass:vpn/sber-totp"
+      },
+      "wait_iface": "tun0",
+      "wait_timeout": 90,
+      "openconnect_args": ["--local-hostname=$HOSTNAME"],
+      "post_connect": ["./ru-routes.sh update_sber"]
+    },
+    {
+      "name": "adguard",
+      "connector": "shell",
+      "mode": "unattended",
+      "up": "adguardvpn-cli connect",
+      "down": "adguardvpn-cli disconnect",
+      "wait_iface": "tun1",
+      "wait_timeout": 60,
+      "post_connect": [
+        "sudo ip route add default via 172.16.219.2 dev tun1 || true",
+        "sudo ip rule add pref 100 table main"
+      ],
+      "post_disconnect": [
+        "sudo ip rule del pref 100 table main || true"
+      ]
+    }
+  ]
+}

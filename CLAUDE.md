@@ -46,7 +46,8 @@ Config is persisted to `$CACHE_DIR/config` on install; subsequent update/remove/
 
 - `mv-routes.sh` — Moves routes matching `--iface`/`--proto` criteria from main table to a target table. Supports `--no-iface`/`--no-proto` for inverse matching. Two-phase: add to target first, then delete from main only on success.
 - `collect.sh` — Diagnostic script that dumps network state (interfaces, addresses, routes, rules, DNS).
-- `combo.sh` — Quick AdGuardVPN connect/disconnect with route setup (`enable`/`disable`).
+- `vpn.sh` — Ordered multi-VPN `up`/`down`/`status` (openconnect + shell CLIs); profiles in `vpn-profiles.json` (see `vpn-profiles.json.example`, [docs/secrets-setup.md](docs/secrets-setup.md)).
+- `ga_qr_decode.py` — Decode Google Authenticator export QR → base32 secret for `pass otp insert`.
 
 ### `ip_whois.py`
 
@@ -76,7 +77,8 @@ ru-routes.sh          Main orchestrator (install/update/remove/status for Russia
 │   ├── ip-country-ripe.py    Alternative: uses RIPE Stat API instead of MRT data
 │   └── requirements.txt      aggregate_prefixes, pyasn, requests
 collect.sh            Network diagnostics dumper
-combo.sh              AdGuardVPN quick-connect wrapper
+vpn.sh                Multi-VPN connector (openconnect + shell CLIs)
+vpn_profiles_load.py  Profile loader for vpn.sh (JSON/YAML)
 ip_whois.py           WHOIS lookup tool for routes
 ```
 

@@ -1,0 +1,5 @@
+vpn-profiles.yaml
+vpn-profiles.json
+venv/
+__pycache__/
+*.pyc

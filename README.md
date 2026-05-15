@@ -12,8 +12,9 @@ Linux policy-based routing toolkit for managing split tunneling and VPN routing.
 
 - Linux with `iproute2`
 - Root/sudo
-- Python 3.10+ (for radb-tools and ip_whois.py)
+- Python 3.10+ (for radb-tools, ip_whois.py, VPN tools)
 - git (radb-tools is a submodule)
+- Optional VPN stack: `openconnect`, `pass`, `pass-otp` ([pass-extension-otp](https://github.com/tadfisher/pass-otp)), `oathtool` — see [docs/secrets-setup.md](docs/secrets-setup.md)
 
 ## Quick start
 
@@ -51,15 +52,44 @@ IFACE=eth0 GATEWAY=10.0.0.1 ./ru-routes.sh install
 ./ru-routes.sh update_sber    # Rebuild SberCloud tables (use after VPN reconnect)
 ```
 
+### vpn.sh
+
+Connect multiple VPNs in order (openconnect with LDAP+TOTP, shell CLIs such as AdGuard), then run routing hooks (`ru-routes.sh update_sber`, custom `ip route` / `ip rule`).
+
+**Setup:** [docs/secrets-setup.md](docs/secrets-setup.md) (GPG, pass, pass-otp) · copy `vpn-profiles.yaml.example` → `vpn-profiles.yaml` · [docs/sudoers-openconnect.example](docs/sudoers-openconnect.example) for passwordless `sudo openconnect`.
+
+```bash
+cp vpn-profiles.json.example vpn-profiles.json   # edit servers, pass: paths
+# optional: cp vpn-profiles.yaml.example vpn-profiles.yaml (needs pip install pyyaml)
+
+./vpn.sh up          # all profiles in order
+./vpn.sh up sber_vpn # one profile
+./vpn.sh down
+./vpn.sh status
+```
+
+**TOTP from Google Authenticator export QR:**
+
+```bash
+pip install pyzbar Pillow   # optional; apt install libzbar0
+./ga_qr_decode.py export.png
+pass otp insert vpn/your-totp
+```
+
+Plans and design: [docs/plans/multi-vpn-automation.md](docs/plans/multi-vpn-automation.md).
+
 ### Other scripts
 
 | Script | Description |
 |---|---|
 | `mv-routes.sh` | Move routes matching interface or protocol criteria between routing tables |
 | `collect.sh` | Dump full network state (interfaces, addresses, routes, rules, DNS) |
-| `combo.sh` | Quick AdGuardVPN connect/disconnect with route setup |
+| `vpn.sh` | Ordered multi-VPN connect/disconnect with pass-backed secrets |
+| `ga_qr_decode.py` | Decode GA export QR → base32 TOTP secret for `pass otp insert` |
 | `ip_whois.py` | WHOIS lookup for all IPs in the routing table, outputs CSV |
 | `test-sites` | Verify that sites are routed through the correct routing tables |
+| `test-ga_qr_decode` | Unit tests for `ga_qr_decode.py` |
+| `test-vpn` | Smoke tests for VPN profile loading and CLI |
 
 ### mv-routes.sh
 

@@ -1,0 +1,36 @@
+# Optional YAML format (requires: pip install pyyaml).
+# Prefer vpn-profiles.json.example — copy to vpn-profiles.json (stdlib JSON, no extra deps).
+# Copy to vpn-profiles.yaml and edit (vpn-profiles.yaml is gitignored).
+# Secrets: pass:vpn/... — see docs/secrets-setup.md
+#
+# Architecture: shell orchestrator (vpn.sh) + YAML profiles.
+
+profiles:
+  - name: sber_vpn
+    connector: openconnect
+    mode: unattended          # unattended | session | manual
+    server: vpn.example.com
+    user: YOUR_USERNAME
+    secrets:
+      password: pass:vpn/sber-ldap
+      totp: pass:vpn/sber-totp
+    wait_iface: tun0
+    wait_timeout: 90
+    # Optional extra openconnect args (env vars like $HOSTNAME are expanded)
+    openconnect_args:
+      - --local-hostname=$HOSTNAME
+    post_connect:
+      - ./ru-routes.sh update_sber
+
+  - name: adguard
+    connector: shell
+    mode: unattended
+    up: adguardvpn-cli connect
+    down: adguardvpn-cli disconnect
+    wait_iface: tun1
+    wait_timeout: 60
+    post_connect:
+      - sudo ip route add default via 172.16.219.2 dev tun1 || true
+      - sudo ip rule add pref 100 table main
+    post_disconnect:
+      - sudo ip rule del pref 100 table main || true
