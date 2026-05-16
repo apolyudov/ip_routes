@@ -47,7 +47,16 @@ Config is persisted to `$CACHE_DIR/config` on install; subsequent update/remove/
 
 - `mv-routes.sh` — Moves routes matching `--iface`/`--proto` criteria from main table to a target table. Supports `--no-iface`/`--no-proto` for inverse matching. Two-phase: add to target first, then delete from main only on success.
 - `collect.sh` — Diagnostic script that dumps network state (interfaces, addresses, routes, rules, DNS).
-- `vpn.sh` — Ordered multi-VPN `up`/`down`/`status` (openconnect + shell CLIs); profiles in `vpn-profiles.json` (see `vpn-profiles.json.example`, [docs/secrets-setup.md](docs/secrets-setup.md)). Requires secrets setup (`pass`, GPG key, LDAP/TOTP entries — see `docs/secrets-setup.md`) before first use.
+- `vpn.sh` — Ordered multi-VPN connector with daemon mode. Requires secrets setup (`pass`, GPG key, LDAP/TOTP entries — see `docs/secrets-setup.md`) before first use.
+  ```bash
+  ./vpn.sh up [PROFILE ...]       # Connect profiles in order
+  ./vpn.sh down [PROFILE ...]     # Disconnect in reverse order
+  ./vpn.sh daemon [PROFILE ...]   # Connect + auto-restart on session expiry (forks to background)
+  ./vpn.sh stop                   # Stop daemon and disconnect profiles
+  ./vpn.sh log                    # Tail daemon log
+  ./vpn.sh status                 # Show profile / interface / pid state
+  ./vpn.sh list                   # List profile names
+  ```
 - `ga_qr_decode.py` — Decode Google Authenticator export QR → base32 secret for `pass otp insert`.
 
 ### `ip_whois.py`
@@ -83,7 +92,7 @@ ru-routes.sh          Main orchestrator (install/update/remove/status for Russia
 │   ├── ip-country-ripe.py    Alternative: uses RIPE Stat API instead of MRT data
 │   └── requirements.txt      aggregate_prefixes, pyasn, requests
 collect.sh            Network diagnostics dumper
-vpn.sh                Multi-VPN connector (openconnect + shell CLIs)
+vpn.sh                Multi-VPN connector (openconnect + shell CLIs) with daemon mode
 vpn_profiles_load.py  Profile loader for vpn.sh (JSON/YAML)
 ip_whois.py           WHOIS lookup tool for routes
 ```

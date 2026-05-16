@@ -29,6 +29,9 @@ Usage: vpn.sh <command> [profile ...]
 Commands:
   up [PROFILE ...]    Connect profiles in order (all from yaml if omitted)
   down [PROFILE ...]  Disconnect in reverse order
+  daemon [PROFILE ..] Connect and auto-restart on disconnect (openconnect only)
+  stop                Stop daemon and disconnect profiles
+  log                 Tail daemon log
   status              Show profile / interface / pid state
   list                List profile names from vpn-profiles.yaml
 
@@ -444,12 +447,108 @@ cmd_list() {
     profile_list
 }
 
+cmd_daemon() {
+    require_profiles
+
+    local -a names=("$@")
+    if [[ ${#names[@]} -eq 0 ]]; then
+        mapfile -t names < <(profile_list)
+    fi
+
+    local n
+    for n in "${names[@]}"; do
+        local connector
+        connector="$(profile_json "$n" | json_get connector)"
+        if [[ "$connector" != "openconnect" ]]; then
+            err "daemon mode only supports openconnect profiles, got: $connector ($n)"
+            exit 1
+        fi
+    done
+
+    local DAEMON_LOG="$STATE_DIR/daemon.log"
+    mkdir -p "$STATE_DIR"
+
+    # Fork to background, redirect stdout+stderr to log file
+    if [[ -z "${VPN_DAEMON_CHILD:-}" ]]; then
+        VPN_DAEMON_CHILD=1 nohup "$0" daemon "$@" >> "$DAEMON_LOG" 2>&1 &
+        local daemon_pid=$!
+        echo "$daemon_pid" > "$STATE_DIR/daemon.pid"
+        log "daemon: started (pid $daemon_pid, log $DAEMON_LOG)"
+        return 0
+    fi
+
+    local RESTART_DELAY=10
+    log "daemon: monitoring ${names[*]} (auto-restart on disconnect)"
+
+    # Initial connection for all profiles
+    for n in "${names[@]}"; do
+        connect_profile "$n" || true
+    done
+
+    # Monitor loop: watch primary profile pid, reconnect all when it dies
+    local primary="${names[0]}"
+    while true; do
+        local pf pid
+        pf="$(pid_file "$primary")"
+        if [[ -f "$pf" ]]; then
+            pid="$(cat "$pf")"
+            if ps -p "$pid" -o pid= >/dev/null 2>&1; then
+                sleep 30
+                continue
+            fi
+        fi
+
+        log "daemon: $primary disconnected, reconnecting in ${RESTART_DELAY}s..."
+        local i
+        for (( i = ${#names[@]} - 1; i >= 0; i-- )); do
+            disconnect_profile "${names[$i]}" || true
+        done
+        sleep "$RESTART_DELAY"
+        for n in "${names[@]}"; do
+            connect_profile "$n" || { log "daemon: failed to connect $n, retrying in 60s..."; sleep 60; }
+        done
+    done
+}
+
+cmd_log() {
+    local DAEMON_LOG="$STATE_DIR/daemon.log"
+    if [[ ! -f "$DAEMON_LOG" ]]; then
+        echo "No daemon log found at $DAEMON_LOG"
+        return 0
+    fi
+    tail -n 50 -f "$DAEMON_LOG"
+}
+
+cmd_stop() {
+    local daemon_pid_file="$STATE_DIR/daemon.pid"
+    if [[ ! -f "$daemon_pid_file" ]]; then
+        err "daemon not running (no $daemon_pid_file)"
+        return 1
+    fi
+    local dpid
+    dpid=$(cat "$daemon_pid_file")
+    if ! ps -p "$dpid" -o pid= >/dev/null 2>&1; then
+        rm -f "$daemon_pid_file"
+        err "daemon pid $dpid not running (cleaned up pid file)"
+        return 1
+    fi
+    log "stopping daemon (pid $dpid)..."
+    # Disconnect all profiles first, then kill the daemon
+    cmd_down "$@" || true
+    kill -TERM "$dpid" 2>/dev/null || true
+    rm -f "$daemon_pid_file"
+    log "daemon stopped."
+}
+
 main() {
     local cmd="${1:-}"
     shift || true
     case "$cmd" in
         up) cmd_up "$@" ;;
         down) cmd_down "$@" ;;
+        daemon) cmd_daemon "$@" ;;
+        stop) cmd_stop "$@" ;;
+        log) cmd_log ;;
         status) cmd_status ;;
         list) cmd_list ;;
         -h|--help|help|"") usage ;;

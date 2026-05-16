@@ -62,11 +62,24 @@ Connect multiple VPNs in order (openconnect with LDAP+TOTP, shell CLIs such as A
 cp vpn-profiles.json.example vpn-profiles.json   # edit servers, pass: paths
 # optional: cp vpn-profiles.yaml.example vpn-profiles.yaml (needs pip install pyyaml)
 
-./vpn.sh up          # all profiles in order
-./vpn.sh up sber_vpn # one profile
+./vpn.sh up              # all profiles in order
+./vpn.sh up sber_vpn     # one profile
 ./vpn.sh down
 ./vpn.sh status
 ```
+
+#### Daemon mode (auto-restart on session expiry)
+
+Openconnect sessions expire (e.g. 12h). Daemon mode monitors the connection and automatically reconnects with fresh credentials (new TOTP) when it drops.
+
+```bash
+./vpn.sh daemon              # fork to background, auto-restart all profiles
+./vpn.sh daemon sber_vpn     # specific profile only
+./vpn.sh log                 # tail daemon log (Ctrl-C to stop watching)
+./vpn.sh stop                # disconnect profiles and stop daemon
+```
+
+The daemon forks to background — logs go to `~/.local/ru-routes/vpn/daemon.log`. It survives closing the terminal. Post-connect/disconnect hooks run on every reconnect cycle.
 
 **TOTP from Google Authenticator export QR:**
 
