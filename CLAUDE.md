@@ -8,27 +8,28 @@ Linux routing management toolkit for policy-based routing. Two main use cases:
 1. Route Russian IP subnets through a specific interface/gateway (for VPN-like split tunneling)
 2. Manage SberCloud VPN routing by moving routes between routing tables
 
-All scripts require root/sudo. Designed for Linux with `iproute2`.
+Run as regular user — scripts use `sudo` for privileged operations (`ip`, `tee`, `mv-routes.sh`). Designed for Linux with `iproute2`.
 
 ## Commands
 
 ### Main script — `ru-routes.sh`
 
 ```bash
-sudo ./ru-routes.sh install        # Download subnet list, register routing table, add routes and ip rule
-sudo ./ru-routes.sh update         # Re-download and apply diffs (update_db + update_tables)
-sudo ./ru-routes.sh update_db      # Re-download subnet list and refresh cache only
-sudo ./ru-routes.sh update_tables  # Sync routes from cache; restore ip rule if missing
-sudo ./ru-routes.sh remove         # Flush routes, remove ip rule, clean radb-tools data
-sudo ./ru-routes.sh status         # Show routing state (table, rule, route count, last update)
-sudo ./ru-routes.sh list [include|exclude]               # Show override list(s) (both if omitted)
-sudo ./ru-routes.sh add <include|exclude> <CIDR>         # Add network to override list
-sudo ./ru-routes.sh del [include|exclude] <CIDR>         # Remove network (searches both if kind omitted)
-sudo ./ru-routes.sh clear [include|exclude]              # Clear override list(s) (both if omitted)
+./ru-routes.sh install              # Prerequisites + data + persistence (routing deferred)
+./ru-routes.sh install --setup-routing  # Full install including routing table setup
+./ru-routes.sh update               # Re-download and apply diffs (update_db + update_tables)
+./ru-routes.sh update_db            # Re-download subnet list and refresh cache only
+./ru-routes.sh update_tables        # Sync routes from cache; restore ip rule if missing
+./ru-routes.sh remove               # Flush routes, remove ip rule, clean radb-tools data
+./ru-routes.sh status               # Show routing state (table, rule, route count, last update)
+./ru-routes.sh list [include|exclude]               # Show override list(s) (both if omitted)
+./ru-routes.sh add <include|exclude> <CIDR>         # Add network to override list
+./ru-routes.sh del [include|exclude] <CIDR>         # Remove network (searches both if kind omitted)
+./ru-routes.sh clear [include|exclude]              # Clear override list(s) (both if omitted)
 
-sudo ./ru-routes.sh install_sber   # Set up sber_cloud_pub (50) and sber_cloud_tun (100) tables
-sudo ./ru-routes.sh remove_sber    # Flush and remove sber_cloud tables
-sudo ./ru-routes.sh update_sber    # remove_sber + install_sber (use after VPN reconnect)
+./ru-routes.sh install_sber         # Set up sber_cloud_pub (50) and sber_cloud_tun (100) tables
+./ru-routes.sh remove_sber          # Flush and remove sber_cloud tables
+./ru-routes.sh update_sber          # remove_sber + install_sber (use after VPN reconnect)
 ```
 
 Configuration via environment variables or `ru-routes.conf` (sourced from same directory):
@@ -46,7 +47,7 @@ Config is persisted to `$CACHE_DIR/config` on install; subsequent update/remove/
 
 - `mv-routes.sh` — Moves routes matching `--iface`/`--proto` criteria from main table to a target table. Supports `--no-iface`/`--no-proto` for inverse matching. Two-phase: add to target first, then delete from main only on success.
 - `collect.sh` — Diagnostic script that dumps network state (interfaces, addresses, routes, rules, DNS).
-- `vpn.sh` — Ordered multi-VPN `up`/`down`/`status` (openconnect + shell CLIs); profiles in `vpn-profiles.json` (see `vpn-profiles.json.example`, [docs/secrets-setup.md](docs/secrets-setup.md)).
+- `vpn.sh` — Ordered multi-VPN `up`/`down`/`status` (openconnect + shell CLIs); profiles in `vpn-profiles.json` (see `vpn-profiles.json.example`, [docs/secrets-setup.md](docs/secrets-setup.md)). Requires secrets setup (`pass`, GPG key, LDAP/TOTP entries — see `docs/secrets-setup.md`) before first use.
 - `ga_qr_decode.py` — Decode Google Authenticator export QR → base32 secret for `pass otp insert`.
 
 ### `ip_whois.py`
@@ -89,11 +90,24 @@ ip_whois.py           WHOIS lookup tool for routes
 
 ### Data flow (install)
 
-1. `radb-tools/dbctl pull_db` + `update_ip RU` + `update_ip CN` + `merge_ip` produces `ip_allow.lst` (RU + CN aggregated prefixes)
-2. Subnet list is validated (non-empty, CIDR format check)
-3. User overrides applied: `apply_user_overrides()` removes excluded CIDRs, then appends included CIDRs
-4. Previous routes in the table are flushed, new routes are added
-5. An `ip rule` entry directs traffic through this table at the configured priority
+Install runs in four phases (routing is optional, `--setup-routing`):
+
+**Prerequisites**
+1. Install radb-tools Python venv (skipped if `radb-tools/venv/` exists)
+2. Setup sudoers for NOPASSWD `ip`/`tee`/`kill`/`openconnect` (skipped if `/etc/sudoers.d/ru-routes` exists)
+
+**Data**
+3. Download subnet list (from `SOURCE_URL`; fallback to cache)
+4. Validate subnets (non-empty, CIDR format check)
+5. Apply user overrides: `apply_user_overrides()` removes excluded CIDRs, then appends included CIDRs
+
+**Persistence**
+6. Save subnet cache, timestamp, and config to `$CACHE_DIR`
+
+**Routing** (only with `--setup-routing`; otherwise deferred to `update_tables`)
+7. Register routing table in `/etc/iproute2/rt_tables`
+8. Flush previous routes, add new routes
+9. Add `ip rule` entry to direct traffic through this table
 
 ### Data flow (update)
 
@@ -141,8 +155,10 @@ Each check prints PASSED/FAILED. All four must pass before considering changes t
 
 - Shell scripts use `set -euo pipefail` (or `set -eu`)
 - File locking via `/tmp/ru-routes.lock` with stale-lock detection (PID check + 10min timeout)
-- All route operations are idempotent where possible
+- All route operations are idempotent where possible; `install` is safe to re-run (skips existing venv, sudoers)
 - `ru-routes.sh` uses two-phase route moves (add first, delete only on success) to avoid route loss
+- Install creates `/etc/sudoers.d/ru-routes` for NOPASSWD access to `ip`, `tee`, `kill`, `openconnect`
+- `vpn.sh` requires secrets setup first — see `docs/secrets-setup.md` (GPG key, `pass`, LDAP/TOTP entries)
 - radb-tools venv is at `radb-tools/venv/` (Python 3.14)
 - Every new feature must be documented in `README.md` before the task is considered complete
 - Commit structure: small features → single commit (docs + tests + code). Larger features → sequence: docs → tests/interfaces → implementation. See `feature_commit` skill.

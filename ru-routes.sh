@@ -120,11 +120,8 @@ check_interface() {
 SUDOERS_FILE="/etc/sudoers.d/ru-routes"
 
 setup_sudoers() {
-    local user="${SUDO_USER:-}"
-    if [[ -z "$user" ]]; then
-        err "Cannot determine user — run install under sudo."
-        return 1
-    fi
+    local user
+    user=$(id -un)
 
     local tmpfile
     tmpfile=$(mktemp)
@@ -142,14 +139,14 @@ EOF
         return 1
     fi
 
-    mv "$tmpfile" "$SUDOERS_FILE"
-    chmod 440 "$SUDOERS_FILE"
+    sudo mv "$tmpfile" "$SUDOERS_FILE"
+    sudo chmod 440 "$SUDOERS_FILE"
     log "Sudoers configured for $user ($SUDOERS_FILE)."
 }
 
 remove_sudoers() {
     if [[ -f "$SUDOERS_FILE" ]]; then
-        rm -f "$SUDOERS_FILE"
+        sudo rm -f "$SUDOERS_FILE"
         log "Removed $SUDOERS_FILE."
     fi
 }
@@ -566,6 +563,15 @@ cmd_install_sber() {
 }
 
 cmd_install() {
+    local setup_routing=false
+    if [[ "${1:-}" == "--setup-routing" ]]; then
+        setup_routing=true
+    fi
+
+    # Load saved config as fallback for IFACE and other vars
+    if [[ -f "$CACHE_DIR/config" ]]; then
+        source "$CACHE_DIR/config"
+    fi
     check_interface
     acquire_lock
 
@@ -574,46 +580,65 @@ cmd_install() {
     trap cleanup_install EXIT
     local tmpfile=$TMPFILE
 
-    (
-        cd radb-tools
-        ./dbctl install
-    )
+    # ── Phase: Prerequisites ─────────────────────────────────────────
+    if [[ ! -d radb-tools/venv ]]; then
+        log "[prerequisites] Installing radb-tools..."
+        (
+            cd radb-tools
+            ./dbctl install
+        )
+    else
+        log "[prerequisites] radb-tools already installed, skipping."
+    fi
+    if [[ ! -f "$SUDOERS_FILE" ]]; then
+        log "[prerequisites] Setting up sudoers..."
+        setup_sudoers
+    else
+        log "[prerequisites] Sudoers already configured, skipping."
+    fi
 
+    # ── Phase: Data ──────────────────────────────────────────────────
+    log "[data] Downloading subnet list..."
     if ! download_subnets "$tmpfile"; then
         if (( USE_CACHE )) && [[ -f "$CACHE_DIR/subnet.lst" ]]; then
-            log "Using cached subnet list."
+            log "[data] Using cached subnet list."
             cp "$CACHE_DIR/subnet.lst" "$tmpfile"
         else
             err "Cannot proceed without subnet list."
             exit 1
         fi
     fi
-
+    log "[data] Validating subnets..."
     if ! validate_subnets "$tmpfile"; then
         err "Subnet validation failed. Aborting."
         exit 1
     fi
-
+    log "[data] Applying user overrides..."
     apply_user_overrides "$tmpfile"
 
-    # table for russian routes
-    echo "Adding configuration for ru_routes"
-    register_table $TABLE $TABLE_ID
-    echo "Clean-up of prevoius routes"
-    flush_routes   $TABLE
-    echo "Adding new routes"
-    add_routes     "$tmpfile" $TABLE $IFACE $GATEWAY
-    echo "Adding enabler rule"
-    add_rule       $TABLE $PRIORITY
-
+    # ── Phase: Persistence ───────────────────────────────────────────
+    log "[persistence] Saving config..."
     mkdir -p "$CACHE_DIR"
     cp "$tmpfile" "$CACHE_DIR/subnet.lst"
     date '+%Y-%m-%d %H:%M:%S' > "$CACHE_DIR/last-update"
     save_config
 
+    # ── Phase: Routing (optional, --setup-routing) ───────────────────
+    if $setup_routing; then
+        log "[routing] Registering table $TABLE ($TABLE_ID)..."
+        register_table $TABLE $TABLE_ID
+        log "[routing] Flushing old routes..."
+        flush_routes $TABLE
+        log "[routing] Adding routes..."
+        add_routes "$tmpfile" $TABLE $IFACE $GATEWAY
+        log "[routing] Adding ip rule (priority $PRIORITY)..."
+        add_rule $TABLE $PRIORITY
+    else
+        log "[routing] Skipped. Run 'update_tables' to apply routing."
+    fi
+
     # Clear the trap since we succeeded — cleanup function will run on EXIT
     tmpfile=""
-    setup_sudoers
     log "Install complete."
 }
 
@@ -825,6 +850,8 @@ cmd_status() {
 
 if [[ "$COMMAND" == "list" || "$COMMAND" == "add" || "$COMMAND" == "del" || "$COMMAND" == "clear" ]]; then
     "cmd_$COMMAND" "$KIND" "$@"
+elif [[ "$COMMAND" == "install" ]]; then
+    cmd_install "$@"
 else
     "cmd_$COMMAND"
 fi

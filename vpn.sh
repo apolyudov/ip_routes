@@ -102,6 +102,19 @@ pid_file() {
     echo "$STATE_DIR/$1.pid"
 }
 
+# Find openconnect PID by matching server URL from profile, write to pid file
+recover_openconnect_pid() {
+    local name="$1"
+    local j server pid
+    j="$(profile_json "$name")"
+    server="$(echo "$j" | json_get server)"
+    pid=$(pgrep -f "openconnect.*${server}" 2>/dev/null || true)
+    if [[ -n "$pid" ]]; then
+        echo "$pid" | sudo tee "$(pid_file "$name")" >/dev/null
+        echo "$pid"
+    fi
+}
+
 pass_show() {
     local spec="$1"
     require_cmd pass "password retrieval"
@@ -204,8 +217,14 @@ connect_openconnect() {
     local pf
     pf="$(pid_file "$name")"
     mkdir -p "$STATE_DIR"
-    if [[ -f "$pf" ]] && kill -0 "$(cat "$pf")" 2>/dev/null; then
+    if [[ -f "$pf" ]] && ps -p "$(cat "$pf")" -o pid= >/dev/null 2>&1; then
         log "profile $name: already running (pid $(cat "$pf"))"
+        return 0
+    fi
+    local recovered
+    recovered=$(recover_openconnect_pid "$name")
+    if [[ -n "$recovered" ]]; then
+        log "profile $name: recovered stale pid file (pid $recovered)"
         return 0
     fi
 
@@ -397,10 +416,16 @@ cmd_status() {
         printf '%-16s %-12s' "$n" "$connector"
         if [[ "$connector" == "openconnect" ]]; then
             pf="$(pid_file "$n")"
-            if [[ -f "$pf" ]] && kill -0 "$(cat "$pf")" 2>/dev/null; then
+            if [[ -f "$pf" ]] && ps -p "$(cat "$pf")" -o pid= >/dev/null 2>&1; then
                 printf ' pid=%s' "$(cat "$pf")"
             else
-                printf ' stopped'
+                local recovered
+                recovered=$(recover_openconnect_pid "$n")
+                if [[ -n "$recovered" ]]; then
+                    printf ' pid=%s (recovered)' "$recovered"
+                else
+                    printf ' stopped'
+                fi
             fi
         fi
         if [[ -n "$iface" ]]; then
