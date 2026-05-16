@@ -60,10 +60,15 @@ Dependencies: `beautifulsoup4` (install separately).
 See `radb-tools/README.md`. Key commands via `dbctl`:
 ```bash
 cd radb-tools && ./dbctl install    # Create venv, install Python deps
-./dbctl pull_db                     # Download RIPE ASN database and MRT RIB dump
+./dbctl pull_db                     # pull_asn + pull_rib + convert_rib
+./dbctl pull_asn                    # Download RIPE ASN database (wget -N)
+./dbctl pull_rib                    # Download RouteViews RIB archive (resume-capable)
+./dbctl convert_rib                     # Convert RIB archive to ipasn.dat
 ./dbctl update_ip                   # Generate ip_RU.lst and asn_RU.lst from the database
+./dbctl merge_ip RU CN              # Merge country lists into ip_allow.lst
 ./dbctl clean                       # Remove generated/backup files
 ```
+All pull/convert_rib phases accept `--force`/`-f` to bypass skip logic. `pull_rib` resumes partial downloads automatically.
 
 ## Architecture
 
@@ -71,7 +76,7 @@ cd radb-tools && ./dbctl install    # Create venv, install Python deps
 ru-routes.sh          Main orchestrator (install/update/remove/status for Russian routes)
 ├── mv-routes.sh      Low-level route mover between tables
 ├── radb-tools/       Git submodule (github.com:apolyudov/radb-tools)
-│   ├── dbctl         Shell driver: pull_db, update_ip, install, clean
+│   ├── dbctl         Shell driver: pull_asn, pull_rib, convert_rib, pull_db, update_ip, merge_ip, clean
 │   ├── ip-country.py         Generates ip_<CC>.lst (CIDR prefixes per country from MRT RIB data)
 │   ├── asn-country.py        Generates asn_<CC>.lst (ASN list per country)
 │   ├── ip-country-ripe.py    Alternative: uses RIPE Stat API instead of MRT data
