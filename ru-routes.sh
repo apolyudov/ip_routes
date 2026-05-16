@@ -116,6 +116,44 @@ check_interface() {
     log "Interface: $IFACE"
 }
 
+# ── Sudoers setup ────────────────────────────────────────────────────
+SUDOERS_FILE="/etc/sudoers.d/ru-routes"
+
+setup_sudoers() {
+    local user="${SUDO_USER:-}"
+    if [[ -z "$user" ]]; then
+        err "Cannot determine user — run install under sudo."
+        return 1
+    fi
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile" <<EOF
+# Managed by ru-routes install/remove
+${user} ALL=(root) NOPASSWD: /usr/sbin/ip
+${user} ALL=(root) NOPASSWD: /usr/bin/tee -a /etc/iproute2/rt_tables
+${user} ALL=(root) NOPASSWD: /usr/bin/kill
+${user} ALL=(root) NOPASSWD: /home/linuxbrew/.linuxbrew/bin/openconnect
+EOF
+
+    if ! visudo -c -f "$tmpfile" >/dev/null 2>&1; then
+        rm -f "$tmpfile"
+        err "Sudoers syntax check failed — not installing."
+        return 1
+    fi
+
+    mv "$tmpfile" "$SUDOERS_FILE"
+    chmod 440 "$SUDOERS_FILE"
+    log "Sudoers configured for $user ($SUDOERS_FILE)."
+}
+
+remove_sudoers() {
+    if [[ -f "$SUDOERS_FILE" ]]; then
+        rm -f "$SUDOERS_FILE"
+        log "Removed $SUDOERS_FILE."
+    fi
+}
+
 # ── Routing table registration ───────────────────────────────────────
 register_table() {
     local table=$1
@@ -575,6 +613,7 @@ cmd_install() {
 
     # Clear the trap since we succeeded — cleanup function will run on EXIT
     tmpfile=""
+    setup_sudoers
     log "Install complete."
 }
 
@@ -591,6 +630,7 @@ cmd_remove() {
         git clean -xdf
     )
 
+    remove_sudoers
     release_lock
     log "Remove complete."
 }
