@@ -687,7 +687,7 @@ calc_diffs() {
 
   cat "$name_input" | ipv4_sort > "$name_base"
 
-  ip route show table $table | cut -d" " -f1 | ipv4_sort > "$tbl_file"
+  ip route show table $table 2>/dev/null | cut -d" " -f1 | ipv4_sort > "$tbl_file" || true
   diff -ura "$tbl_file" "$name_base" | grep "^+" | sed '1d' | cut -c2- > "$name_add" || true
   diff -ura "$tbl_file" "$name_base" | grep "^-" | sed '1d' | cut -c2- > "$name_del" || true
   rm -f "$tbl_file" "$name_base"
